@@ -176,6 +176,35 @@ const getInitials = (name) =>
 
 const safeArray = (value, fallback = []) => (Array.isArray(value) ? value : fallback)
 
+const slugify = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+const getRawValue = (raw, keys, fallback = '') => {
+  if (!raw || typeof raw !== 'object') return fallback
+
+  for (const key of keys) {
+    if (raw[key] !== undefined && raw[key] !== null && raw[key] !== '') return raw[key]
+  }
+
+  const normalizedEntries = Object.entries(raw).map(([key, value]) => [
+    slugify(key),
+    value,
+  ])
+  for (const key of keys) {
+    const normalizedKey = slugify(key)
+    const match = normalizedEntries.find(([entryKey, value]) => entryKey === normalizedKey && value !== '')
+    if (match) return match[1]
+  }
+
+  return fallback
+}
+
 const normalizeTeamName = (teamName) => {
   let normalized = String(teamName || '').trim().replace(/\s+/g, ' ')
   const prefixPattern = /^(doi|đội|ban|nhom|nhóm|to|tổ|pdt|pđt|ip)\s+/i
@@ -235,12 +264,14 @@ const getCompetitionStatus = (competition) => {
 }
 
 const toAdvisorRow = (advisor, index = 0) => ({
-  id: String(advisor.id),
+  id: String(advisor.id || `advisor-${slugify(advisor.name) || crypto.randomUUID()}`),
   name: advisor.name ?? '',
   team: advisor.team ?? '',
   initials: advisor.initials ?? getInitials(advisor.name),
   revenue: normalizeRevenue(advisor.revenue),
+  note: advisor.note ?? '',
   avatar: advisor.avatar ?? '',
+  active_status: advisor.active_status ?? advisor.activeStatus ?? true,
   sort_order: index,
 })
 
@@ -250,7 +281,10 @@ const fromAdvisorRow = (row) => ({
   team: row.team ?? '',
   initials: row.initials ?? getInitials(row.name),
   revenue: normalizeRevenue(row.revenue),
+  note: row.note ?? '',
   avatar: row.avatar ?? '',
+  active_status: row.active_status ?? true,
+  sort_order: Number(row.sort_order ?? 0),
 })
 
 const toCampaignRow = (campaign) => ({
@@ -327,6 +361,24 @@ const replaceTableRows = async (table, idColumn, rows) => {
   if (error) throw error
 }
 
+const sortAdvisorRowsFromSupabase = (rows) => {
+  const advisors = safeArray(rows)
+  const allSortOrderZero = advisors.length > 0 && advisors.every((row) => Number(row.sort_order || 0) === 0)
+  if (allSortOrderZero) return sortByRevenueDesc(advisors)
+  return [...advisors].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+}
+
+const fetchAdvisorRows = async () => {
+  console.log('loading advisors from supabase')
+  const { data, error } = await supabase
+    .from('advisors')
+    .select('*')
+    .order('sort_order', { ascending: true })
+
+  if (error) throw error
+  return sortAdvisorRowsFromSupabase(data ?? [])
+}
+
 const fetchCompetitionRows = async () => {
   console.log('loading competitions from supabase')
   const { data, error } = await supabase
@@ -339,8 +391,8 @@ const fetchCompetitionRows = async () => {
 }
 
 const loadSupabaseData = async () => {
-  const [advisorsResult, campaignRows, rankingsResult, bannersResult] = await Promise.all([
-    supabase.from(SUPABASE_TABLES.advisors).select('*').order('sort_order', { ascending: true }),
+  const [advisorRows, campaignRows, rankingsResult, bannersResult] = await Promise.all([
+    fetchAdvisorRows(),
     fetchCompetitionRows(),
     supabase
       .from(SUPABASE_TABLES.campaignRankings)
@@ -350,18 +402,18 @@ const loadSupabaseData = async () => {
     supabase.from(SUPABASE_TABLES.banners).select('*'),
   ])
 
-  const results = [advisorsResult, rankingsResult, bannersResult]
+  const results = [rankingsResult, bannersResult]
   const failed = results.find((result) => result.error)
   if (failed) throw failed.error
   console.log('Loaded competitions from Supabase', campaignRows)
 
   return {
-    advisors: advisorsResult.data.map(fromAdvisorRow),
+    advisors: advisorRows.map(fromAdvisorRow),
     campaigns: campaignRows.map(fromCampaignRow),
     campaignRankings: fromCampaignRankingRows(rankingsResult.data),
     banners: fromBannerRows(bannersResult.data),
     isEmpty:
-      !advisorsResult.data.length &&
+      !advisorRows.length &&
       !campaignRows.length &&
       !rankingsResult.data.length &&
       !bannersResult.data.length,
@@ -381,6 +433,31 @@ const saveSupabaseData = async ({ advisors, campaignRankings, banners }) => {
     'page_id',
     Object.entries(normalizeBanners(banners)).map(toBannerRow),
   )
+}
+
+const saveAdvisorsToSupabase = async (advisors) => {
+  if (!isSupabaseConfigured) {
+    throw new Error('Thiếu cấu hình Supabase. Không thể lưu danh sách tư vấn viên.')
+  }
+
+  const rows = safeArray(advisors).map(toAdvisorRow)
+  if (!rows.length) {
+    throw new Error('Không có dữ liệu tư vấn viên hợp lệ để lưu.')
+  }
+
+  console.log('saving advisors to supabase', rows)
+  const { data, error } = await supabase
+    .from('advisors')
+    .upsert(rows, { onConflict: 'id' })
+    .select('*')
+
+  if (error) {
+    console.error('supabase advisors upsert error', error)
+    throw error
+  }
+
+  console.log('supabase advisors upsert success', data)
+  return data
 }
 
 const saveCompetitionToSupabase = async (competition) => {
@@ -482,40 +559,54 @@ const getCampaignTimeBadge = (campaign) => {
 const sortByRevenueDesc = (rows) =>
   [...rows].sort((a, b) => Number(b.revenue || 0) - Number(a.revenue || 0))
 
-function normalizeImportedAdvisor(raw) {
-  const name =
-    raw['Họ tên'] ??
-    raw['Ho ten'] ??
-    raw.Name ??
-    raw.name ??
-    raw['Họ và tên'] ??
-    ''
-  const team =
-    raw['Đội'] ??
-    raw['Tên đội'] ??
-    raw['Tên Đội'] ??
-    raw['Tên Nhóm'] ??
-    raw['Tên nhóm'] ??
-    raw['Đội nhóm'] ??
-    raw.Nhom ??
-    raw.Team ??
-    raw.team ??
-    ''
-  const initials =
-    raw['Viết tắt'] ?? raw['Viet tat'] ?? raw.Initials ?? raw.initials ?? getInitials(name)
-  const revenue =
-    raw['Doanh thu'] ?? raw.Revenue ?? raw.AFYP ?? raw.revenue ?? raw['AFYP'] ?? 0
-  const avatar = raw.Avatar ?? raw['Avatar URL'] ?? raw.avatar ?? ''
+function normalizeImportedAdvisor(raw, index = 0) {
+  const name = getRawValue(raw, [
+    'Họ tên',
+    'Họ và tên',
+    'Tên đại lý',
+    'Ten dai ly',
+    'Ho ten',
+    'Name',
+    'name',
+    'H峄?t锚n',
+    'H峄?v脿 t锚n',
+  ])
+  const team = getRawValue(raw, [
+    'Đội',
+    'Tên nhóm',
+    'Doi',
+    'Ten nhom',
+    'Nhom',
+    'Team',
+    'team',
+    '膼峄檌',
+    'T锚n 膽峄檌',
+    'T锚n 膼峄檌',
+    'T锚n Nh贸m',
+    'T锚n nh贸m',
+    '膼峄檌 nh贸m',
+  ])
+  const initials = getRawValue(raw, ['Viết tắt', 'Viet tat', 'Initials', 'initials'], getInitials(name))
+  const revenue = getRawValue(raw, ['Doanh thu', 'AFYP', 'Revenue', 'revenue'], 0)
+  const note = getRawValue(raw, ['Ghi chú', 'Ghi chu', 'Note', 'note'])
+  const avatar = getRawValue(raw, ['Avatar', 'Avatar URL', 'avatar'])
+  const activeStatus = getRawValue(raw, ['active_status', 'Trạng thái', 'Trang thai', 'Active'], true)
+  const rawId = getRawValue(raw, ['id', 'ID', 'Mã', 'Ma', 'Mã TVV', 'Ma TVV'])
 
   if (!String(name).trim()) return null
+  const normalizedName = String(name).trim()
+  const stableId = rawId ? String(rawId).trim() : `advisor-${slugify(normalizedName) || crypto.randomUUID()}`
 
   return {
-    id: generateId('row'),
-    name: String(name).trim(),
+    id: stableId,
+    name: normalizedName,
     team: String(team || '').trim(),
     initials: String(initials || getInitials(name)).toUpperCase().slice(0, 2),
     revenue: normalizeRevenue(revenue),
+    note: String(note || '').trim(),
     avatar: String(avatar || '').trim(),
+    active_status: activeStatus === true || !['false', '0', 'inactive', 'ngung', 'ngừng'].includes(String(activeStatus).trim().toLowerCase()),
+    sort_order: index,
   }
 }
 
@@ -617,6 +708,14 @@ function App() {
     return remoteCampaigns
   }, [])
 
+  const fetchAdvisors = useCallback(async () => {
+    if (!isSupabaseConfigured) return []
+    const rows = await fetchAdvisorRows()
+    const remoteAdvisors = rows.map(fromAdvisorRow)
+    setAdvisors((current) => (rowsEqual(current, remoteAdvisors) ? current : remoteAdvisors))
+    return remoteAdvisors
+  }, [])
+
   useEffect(() => {
     if (!isSupabaseConfigured) return undefined
 
@@ -689,6 +788,7 @@ function App() {
         setCampaignRankings={setCampaignRankings}
         setBanners={setBanners}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
+        fetchAdvisors={fetchAdvisors}
         fetchCompetitions={fetchCompetitions}
         navigate={navigate}
       />
@@ -1195,6 +1295,7 @@ function AdminView({
   setCampaignRankings,
   setBanners,
   setIsAdminLoggedIn,
+  fetchAdvisors,
   fetchCompetitions,
   navigate,
 }) {
@@ -1435,39 +1536,56 @@ function AdminView({
     try {
       const rows = await parseExcelFile(file)
       const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      await saveAdvisorsToSupabase(normalized)
+      await fetchAdvisors()
       setAdvisorPreview(normalized)
       setAdvisorPreviewSource(`Excel: ${file.name}`)
       setAdvisorImportError('')
-      setAdvisorImportMessage('')
-    } catch {
-      setAdvisorImportError('Không thể đọc file Excel. Vui lòng kiểm tra lại file.')
+      setAdvisorImportMessage('Đã lưu danh sách TVV lên Supabase.')
+    } catch (importError) {
+      console.error(importError)
+      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${importError?.message ?? importError}`)
+      setAdvisorImportError(importError?.message ?? 'Không thể đọc/lưu file Excel. Vui lòng kiểm tra lại file.')
       setAdvisorImportMessage('')
     }
   }
 
   const handleAdvisorRemoteImport = async () => {
     try {
-      const rows = await fetchGoogleSheetCsvRows(advisorRemoteUrl)
+      const rows = advisorRemoteUrl.includes('docs.google.com')
+        ? await fetchGoogleSheetCsvRows(advisorRemoteUrl)
+        : await parseRemoteDataset(advisorRemoteUrl)
       const normalized = sortByRevenueDesc(
         rows.map(normalizeImportedAdvisor).filter(Boolean),
       ).slice(0, 10)
-      setAdvisors(normalized)
+      await saveAdvisorsToSupabase(normalized)
+      await fetchAdvisors()
       setAdvisorPreview([])
       setAdvisorPreviewSource('')
       setAdvisorImportError('')
-      setAdvisorImportMessage('Đã cập nhật Top 10 từ Google Sheet.')
+      setAdvisorImportMessage('Đã cập nhật Top 10 từ Google Sheet lên Supabase.')
     } catch (remoteError) {
+      console.error(remoteError)
+      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${remoteError?.message ?? remoteError}`)
       setAdvisorImportError(remoteError.message)
       setAdvisorImportMessage('')
     }
   }
 
-  const applyAdvisorPreview = () => {
+  const applyAdvisorPreview = async () => {
     if (!advisorPreview.length) return
-    setAdvisors(advisorPreview)
-    setAdvisorPreview([])
-    setAdvisorPreviewSource('')
-    setAdvisorImportMessage('')
+    try {
+      await saveAdvisorsToSupabase(advisorPreview)
+      await fetchAdvisors()
+      setAdvisorPreview([])
+      setAdvisorPreviewSource('')
+      setAdvisorImportError('')
+      setAdvisorImportMessage('Đã lưu danh sách TVV lên Supabase.')
+    } catch (previewError) {
+      console.error(previewError)
+      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${previewError?.message ?? previewError}`)
+      setAdvisorImportError(previewError?.message ?? 'Không thể lưu danh sách TVV lên Supabase.')
+    }
   }
 
   const getCampaignImport = (campaignId) =>

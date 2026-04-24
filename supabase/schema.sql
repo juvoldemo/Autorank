@@ -7,10 +7,21 @@ create table if not exists public.advisors (
   team text not null default '',
   initials text not null default 'TV',
   revenue bigint not null default 0,
+  note text not null default '',
   avatar text not null default '',
+  active_status boolean not null default true,
   sort_order integer not null default 0,
   updated_at timestamptz not null default now()
 );
+
+alter table public.advisors add column if not exists name text not null default '';
+alter table public.advisors add column if not exists team text not null default '';
+alter table public.advisors add column if not exists revenue bigint not null default 0;
+alter table public.advisors add column if not exists note text not null default '';
+alter table public.advisors add column if not exists avatar text not null default '';
+alter table public.advisors add column if not exists active_status boolean not null default true;
+alter table public.advisors add column if not exists sort_order integer not null default 0;
+alter table public.advisors add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.competitions (
   id text primary key,
