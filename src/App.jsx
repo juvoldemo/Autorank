@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
   CalendarDays,
+  Check,
   ChevronLeft,
   Flame,
   Medal,
@@ -250,6 +251,28 @@ const getCompetitionStatus = (competition) => {
   return 'active'
 }
 
+const getComputedCompetitionStatus = ({ startDate, start_date, endDate, end_date }) =>
+  getCompetitionStatus({
+    start_date: start_date ?? startDate,
+    end_date: end_date ?? endDate,
+    published: true,
+  })
+
+const createCampaignDraft = () => ({
+  id: generateId('campaign'),
+  title: '',
+  poster: '',
+  image: '',
+  startDate: '',
+  endDate: '',
+  details: '',
+  summary: '',
+  reward: '',
+  target: '',
+  rules: '',
+  published: true,
+})
+
 const toAdvisorRow = (advisor, index = 0) => ({
   id: String(advisor.id || `advisor-${slugify(advisor.name) || crypto.randomUUID()}`),
   name: advisor.name ?? '',
@@ -285,7 +308,7 @@ const toCampaignRow = (campaign) => ({
   reward: campaign.reward ?? '',
   target: campaign.target ?? '',
   rules: campaign.rules ?? '',
-  published: campaign.status ? campaign.status !== 'ended' : campaign.published ?? true,
+  published: getComputedCompetitionStatus(campaign) !== 'ended',
 })
 
 const fromCampaignRow = (row) => ({
@@ -1307,10 +1330,27 @@ function AdminView({
   const [advisorImportError, setAdvisorImportError] = useState('')
   const [advisorImportMessage, setAdvisorImportMessage] = useState('')
   const [campaignImportState, setCampaignImportState] = useState({})
+  const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false)
+  const [campaignDraft, setCampaignDraft] = useState(() => createCampaignDraft())
+  const [campaignDraftRankings, setCampaignDraftRankings] = useState([])
+  const [campaignDraftImport, setCampaignDraftImport] = useState({
+    remoteUrl: '',
+    preview: [],
+    source: '',
+    error: '',
+  })
+  const [campaignDraftError, setCampaignDraftError] = useState('')
+  const [isSavingCampaignDraft, setIsSavingCampaignDraft] = useState(false)
+  const [adminToast, setAdminToast] = useState('')
 
   const alertSupabaseError = (action, supabaseError) => {
     console.error(action, supabaseError)
     window.alert(`${action}: ${supabaseError?.message ?? supabaseError}`)
+  }
+
+  const showAdminToast = (message) => {
+    setAdminToast(message)
+    window.setTimeout(() => setAdminToast(''), 2600)
   }
 
   const handleLogin = (event) => {
@@ -1371,31 +1411,64 @@ function AdminView({
     }
   }
 
-  const addCampaign = async () => {
-    const id = generateId('campaign')
-    const newCampaign = {
-      id,
-      title: 'Chương trình mới',
-      poster: '',
-      image: '',
-      startDate: '2026-05-01',
-      endDate: '2026-05-31',
-      status: 'active',
-      details: 'Mô tả chương trình',
-      summary: 'Mô tả chương trình',
-      reward: '',
-      target: '',
-      rules: '',
-      published: true,
+  const openCampaignModal = () => {
+    setCampaignDraft(createCampaignDraft())
+    setCampaignDraftRankings([])
+    setCampaignDraftImport({ remoteUrl: '', preview: [], source: '', error: '' })
+    setCampaignDraftError('')
+    setIsCampaignModalOpen(true)
+  }
+
+  const closeCampaignModal = () => {
+    if (isSavingCampaignDraft) return
+    setIsCampaignModalOpen(false)
+    setCampaignDraftError('')
+  }
+
+  const updateCampaignDraft = (field, value) => {
+    setCampaignDraft((current) => ({ ...current, [field]: value }))
+    setCampaignDraftError('')
+  }
+
+  const validateCampaignDraft = () => {
+    if (!campaignDraft.title.trim()) return 'Vui lòng nhập tên chương trình'
+    if (!campaignDraft.startDate) return 'Vui lòng chọn ngày bắt đầu'
+    if (!campaignDraft.endDate) return 'Vui lòng chọn ngày kết thúc'
+    if (parseLocalDate(campaignDraft.endDate) < parseLocalDate(campaignDraft.startDate)) {
+      return 'Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu'
+    }
+    return ''
+  }
+
+  const saveCampaignDraft = async () => {
+    const validationError = validateCampaignDraft()
+    if (validationError) {
+      setCampaignDraftError(validationError)
+      return
     }
 
+    const status = getComputedCompetitionStatus(campaignDraft)
+    const nextCampaign = {
+      ...campaignDraft,
+      status,
+      summary: campaignDraft.summary || campaignDraft.details,
+      published: status !== 'ended',
+    }
+
+    setIsSavingCampaignDraft(true)
     try {
-      await saveCompetitionToSupabase(newCampaign)
+      await saveCompetitionToSupabase(nextCampaign)
+      setCampaignRankings((current) => ({
+        ...current,
+        [campaignDraft.id]: campaignDraftRankings,
+      }))
       await fetchCompetitions()
-      setCampaignRankings((current) => ({ ...current, [id]: [] }))
-      setExpandedCampaignId(id)
+      setIsCampaignModalOpen(false)
+      showAdminToast('Đã thêm chương trình thi đua')
     } catch (supabaseError) {
       alertSupabaseError('Không thể thêm chương trình thi đua vào Supabase', supabaseError)
+    } finally {
+      setIsSavingCampaignDraft(false)
     }
   }
 
@@ -1635,6 +1708,56 @@ function AdminView({
     if (!currentImport.preview.length) return
     setCampaignRankings((current) => ({ ...current, [campaignId]: currentImport.preview }))
     setCampaignImport(campaignId, { preview: [], source: '' })
+  }
+
+  const handleCampaignDraftImageUpload = async (file) => {
+    try {
+      const image = await uploadImageToStorage(file, `campaigns/${campaignDraft.id}`)
+      setCampaignDraft((current) => ({ ...current, poster: image, image }))
+    } catch (uploadError) {
+      alertSupabaseError('Không thể upload poster chương trình lên Supabase Storage', uploadError)
+    }
+  }
+
+  const handleCampaignDraftRankingExcelImport = async (file) => {
+    try {
+      const rows = await parseExcelFile(file)
+      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      setCampaignDraftImport({
+        ...campaignDraftImport,
+        preview: normalized,
+        source: `Excel: ${file.name}`,
+        error: '',
+      })
+    } catch {
+      setCampaignDraftImport((current) => ({
+        ...current,
+        error: 'Không thể đọc file Excel BXH. Vui lòng kiểm tra lại file.',
+      }))
+    }
+  }
+
+  const handleCampaignDraftRankingRemoteImport = async () => {
+    try {
+      const rows = campaignDraftImport.remoteUrl.includes('docs.google.com')
+        ? await fetchGoogleSheetCsvRows(campaignDraftImport.remoteUrl)
+        : await parseRemoteDataset(campaignDraftImport.remoteUrl)
+      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      setCampaignDraftImport({
+        ...campaignDraftImport,
+        preview: normalized,
+        source: `Google Sheet/API: ${campaignDraftImport.remoteUrl}`,
+        error: '',
+      })
+    } catch (remoteError) {
+      setCampaignDraftImport((current) => ({ ...current, error: remoteError.message }))
+    }
+  }
+
+  const applyCampaignDraftRankingPreview = () => {
+    if (!campaignDraftImport.preview.length) return
+    setCampaignDraftRankings(campaignDraftImport.preview)
+    setCampaignDraftImport((current) => ({ ...current, preview: [], source: '' }))
   }
 
   const updatePageBanner = async (pageId, file) => {
@@ -1878,7 +2001,7 @@ function AdminView({
                     type="button"
                     className="button-primary admin-add-campaign-btn"
                     aria-label="Thêm chương trình"
-                    onClick={addCampaign}
+                    onClick={openCampaignModal}
                   >
                     <span className="round-icon button-icon">
                       <Plus size={18} />
@@ -1979,21 +2102,6 @@ function AdminView({
                                     updateCampaign(campaign.id, 'endDate', e.target.value)
                                   }
                                 />
-                              </label>
-                              <label className="full-row">
-                                <span>Trạng thái</span>
-                                <select
-                                  value={campaign.status}
-                                  onChange={(e) =>
-                                    updateCampaign(campaign.id, 'status', e.target.value)
-                                  }
-                                >
-                                  {STATUS_OPTIONS.map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                      {option.label}
-                                    </option>
-                                  ))}
-                                </select>
                               </label>
                               <label className="full-row">
                                 <span>Chi tiết chương trình</span>
@@ -2162,7 +2270,178 @@ function AdminView({
           </div>
         )}
       </div>
+      {adminToast ? <div className="admin-toast">{adminToast}</div> : null}
+      {isCampaignModalOpen && (
+        <CampaignCreateModal
+          draft={campaignDraft}
+          rankings={campaignDraftRankings}
+          importState={campaignDraftImport}
+          error={campaignDraftError}
+          isSaving={isSavingCampaignDraft}
+          onClose={closeCampaignModal}
+          onChange={updateCampaignDraft}
+          onPosterUpload={handleCampaignDraftImageUpload}
+          onFileImport={handleCampaignDraftRankingExcelImport}
+          onRemoteImport={handleCampaignDraftRankingRemoteImport}
+          onRemoteUrlChange={(value) =>
+            setCampaignDraftImport((current) => ({ ...current, remoteUrl: value }))
+          }
+          onApplyPreview={applyCampaignDraftRankingPreview}
+          onClearPreview={() =>
+            setCampaignDraftImport((current) => ({ ...current, preview: [], source: '' }))
+          }
+          onConfirm={saveCampaignDraft}
+        />
+      )}
     </MobileAppShell>
+  )
+}
+
+function CampaignCreateModal({
+  draft,
+  rankings,
+  importState,
+  error,
+  isSaving,
+  onClose,
+  onChange,
+  onPosterUpload,
+  onFileImport,
+  onRemoteImport,
+  onRemoteUrlChange,
+  onApplyPreview,
+  onClearPreview,
+  onConfirm,
+}) {
+  const computedStatus = getComputedCompetitionStatus(draft)
+
+  return (
+    <div className="campaign-modal-overlay" onClick={onClose}>
+      <div className="campaign-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="campaign-modal__head">
+          <div>
+            <h2>Thêm chương trình thi đua</h2>
+            <span className={`admin-status-badge admin-status-badge--${computedStatus}`}>
+              {formatStatusLabel(computedStatus)}
+            </span>
+          </div>
+          <button type="button" className="campaign-modal__close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="campaign-modal__body hide-scrollbar">
+          <div className="campaign-modal__poster">
+            <CampaignVisual campaign={draft} compact />
+            <label className="upload-inline upload-inline--solid">
+              <span className="round-icon button-icon">
+                <Upload size={14} />
+              </span>
+              Upload hình ảnh
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) onPosterUpload(file)
+                  event.target.value = ''
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="campaign-modal__grid">
+            <label className="full-row">
+              <span>Tên chương trình</span>
+              <input
+                value={draft.title}
+                onChange={(event) => onChange('title', event.target.value)}
+                placeholder="Nhập tên chương trình"
+              />
+            </label>
+            <label>
+              <span>Ngày bắt đầu</span>
+              <input
+                type="date"
+                value={draft.startDate}
+                onChange={(event) => onChange('startDate', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Ngày kết thúc</span>
+              <input
+                type="date"
+                value={draft.endDate}
+                onChange={(event) => onChange('endDate', event.target.value)}
+              />
+            </label>
+            <label className="full-row">
+              <span>Chi tiết chương trình</span>
+              <textarea
+                rows="4"
+                value={draft.details}
+                onChange={(event) => onChange('details', event.target.value)}
+                placeholder="Nhập nội dung, thể lệ hoặc mục tiêu chương trình"
+              />
+            </label>
+          </div>
+
+          <div className="campaign-modal__ranking">
+            <div className="campaign-modal__section-head">
+              <div>
+                <h3>BXH chương trình</h3>
+                <p>Upload Excel hoặc lấy dữ liệu từ Google Sheet/API.</p>
+              </div>
+              <span>{rankings.length} TVV</span>
+            </div>
+
+            <ImportTools
+              remoteUrl={importState.remoteUrl}
+              setRemoteUrl={onRemoteUrlChange}
+              onFileImport={onFileImport}
+              onRemoteImport={onRemoteImport}
+              error={importState.error}
+            />
+
+            <PreviewPanel
+              title="Preview BXH chương trình"
+              source={importState.source}
+              rows={importState.preview}
+              onApply={onApplyPreview}
+              onClear={onClearPreview}
+            />
+
+            {rankings.length ? (
+              <div className="campaign-modal__ranking-list">
+                {sortByRevenueDesc(rankings).slice(0, 5).map((advisor, index) => (
+                  <RankingCard key={advisor.id} advisor={advisor} rank={index + 1} />
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          {error ? <div className="form-error campaign-modal__error">{error}</div> : null}
+        </div>
+
+        <div className="campaign-modal__footer">
+          <button
+            type="button"
+            className="campaign-confirm-btn"
+            onClick={onConfirm}
+            disabled={isSaving}
+          >
+            {isSaving ? (
+              <span className="loading-spinner" />
+            ) : (
+              <span className="round-icon button-icon">
+                <Check size={16} />
+              </span>
+            )}
+            Xác nhận
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
