@@ -43,19 +43,6 @@ const compactMoneyFormatter = new Intl.NumberFormat('vi-VN', {
   maximumFractionDigits: 1,
 })
 
-const defaultAdvisors = [
-  { id: 'a1', name: 'Nguyễn Nữ Đức Hiền', team: 'Nguyên Phát', initials: 'NH', revenue: 163000000, avatar: '' },
-  { id: 'a2', name: 'Trần Thị Minh Thơ', team: 'Nha Trang 5', initials: 'TT', revenue: 125200000, avatar: '' },
-  { id: 'a3', name: 'Lê Thị Mỹ Lệ', team: 'Tâm Phát', initials: 'LL', revenue: 122700000, avatar: '' },
-  { id: 'a4', name: 'Huỳnh Thị Thu Lan', team: 'Nguyên Phát', initials: 'HL', revenue: 87700000, avatar: '' },
-  { id: 'a5', name: 'Nguyễn Tấn Trung', team: 'Quyết Thắng', initials: 'NT', revenue: 77500000, avatar: '' },
-  { id: 'a6', name: 'Bùi Thị Vân', team: 'Quyết Thắng', initials: 'BV', revenue: 72100000, avatar: '' },
-  { id: 'a7', name: 'Đỗ Trọng Nguyên', team: 'Thuận Phát', initials: 'ĐN', revenue: 70200000, avatar: '' },
-  { id: 'a8', name: 'Hoàng Nguyễn Lan Chi', team: 'Hồng Đức', initials: 'HC', revenue: 60900000, avatar: '' },
-  { id: 'a9', name: 'Phạm Hoàng Ngân', team: 'Khánh Hòa 2', initials: 'PN', revenue: 57400000, avatar: '' },
-  { id: 'a10', name: 'Đặng Trần Khoa', team: 'Khánh Hòa 1', initials: 'ĐK', revenue: 54100000, avatar: '' },
-]
-
 const defaultCampaigns = [
   {
     id: 'c1',
@@ -456,7 +443,8 @@ const saveAdvisorsToSupabase = async (advisors) => {
     throw error
   }
 
-  console.log('supabase advisors upsert success', data)
+  console.log(`supabase advisors upsert success: saved ${data?.length ?? rows.length} rows`, data)
+  window.alert('Đã lưu vào Supabase')
   return data
 }
 
@@ -670,9 +658,7 @@ function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false)
   const hasHydratedSupabase = useRef(!isSupabaseConfigured)
   const isApplyingRemoteData = useRef(false)
-  const [advisors, setAdvisors] = useState(() =>
-    safeArray(repairStoredText(defaultAdvisors), defaultAdvisors),
-  )
+  const [advisors, setAdvisors] = useState([])
   const [campaigns, setCampaigns] = useState(() =>
     safeArray(repairStoredText(defaultCampaigns), defaultCampaigns),
   )
@@ -895,6 +881,7 @@ function MainView({
               key={`bang-vang-${leaderboardAnimationKey}`}
               podium={podium}
               rankingRows={rankingRows}
+              advisorCount={sortedAdvisors.length}
               bannerImage={getBannerImage(banners, 'bang-vang')}
               onBannerUpload={(file) => updatePageBanner('bang-vang', file)}
               onAdminAccess={() => navigate('/admin')}
@@ -938,10 +925,13 @@ function MainView({
 function BangVangTab({
   podium,
   rankingRows,
+  advisorCount,
   bannerImage,
   onBannerUpload,
   onAdminAccess,
 }) {
+  const hasAdvisors = advisorCount > 0
+
   return (
     <section className="screen">
       <LeaderboardUploadBanner
@@ -952,23 +942,29 @@ function BangVangTab({
       />
 
       <div className="screen-body">
-        <div className="podium-grid">
-          <PodiumCard advisor={podium[0]} rank={2} delay={80} />
-          <PodiumCard advisor={podium[1]} rank={1} delay={0} />
-          <PodiumCard advisor={podium[2]} rank={3} delay={160} />
-        </div>
+        {!hasAdvisors ? (
+          <div className="empty-state">Chưa có dữ liệu tư vấn viên</div>
+        ) : (
+          <>
+            <div className="podium-grid">
+              <PodiumCard advisor={podium[0]} rank={2} delay={80} />
+              <PodiumCard advisor={podium[1]} rank={1} delay={0} />
+              <PodiumCard advisor={podium[2]} rank={3} delay={160} />
+            </div>
 
-        <div className="section-title">Bảng xếp hạng tiếp theo</div>
-        <div className="card-list">
-          {rankingRows.map((advisor, index) => (
-            <RankingCard
-              key={advisor.id}
-              advisor={advisor}
-              rank={index + 4}
-              delay={240 + index * 80}
-            />
-          ))}
-        </div>
+            <div className="section-title">Bảng xếp hạng tiếp theo</div>
+            <div className="card-list">
+              {rankingRows.map((advisor, index) => (
+                <RankingCard
+                  key={advisor.id}
+                  advisor={advisor}
+                  rank={index + 4}
+                  delay={240 + index * 80}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </section>
   )
