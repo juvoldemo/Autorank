@@ -2934,3 +2934,147 @@
   width: 18px;
   height: 18px;
 }
+
+/* Edge-to-edge app frame */
+.mobile-page {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.mobile-shell {
+  width: 100%;
+  max-width: 450px;
+  height: 100vh;
+  min-height: 100vh;
+  max-height: none;
+  height: 100dvh;
+  min-height: 100dvh;
+  margin-right: auto;
+  margin-left: auto;
+  overflow: hidden;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0;
+}
+
+.main-shell,
+.admin-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+}
+
+.mobile-content,
+.mobile-scroll,
+.admin-scroll {
+  min-height: 0;
+}
+
+.mobile-content,
+.mobile-scroll {
+  flex: 1 1 auto;
+}
+
+.mobile-scroll,
+.admin-scroll {
+  overflow-y: auto;
+}
+
+.main-shell .mobile-scroll {
+  padding-bottom: 82px;
+}
+
+.admin-scroll {
+  flex: 1 1 auto;
+  padding-bottom: 0;
+}
+
+.bottom-tabs,
+.main-shell .bottom-tabs {
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: auto;
+  max-width: none;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 26px rgba(12, 39, 82, 0.13);
+  backdrop-filter: blur(18px);
+  transform: none;
+}
+
+.bottom-tab,
+.main-shell .bottom-tab {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 52px;
+  min-height: 52px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 18px;
+  text-align: center;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bottom-tab:hover,
+.main-shell .bottom-tab:hover {
+  transform: none;
+}
+
+.bottom-tab__icon,
+.main-shell .bottom-tab__icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+.bottom-tab__label,
+.main-shell .bottom-tab__label {
+  width: 100%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.bottom-tab.is-active,
+.main-shell .bottom-tab.is-active {
+  color: var(--bv-blue-900);
+  background: linear-gradient(180deg, #ffffff 0%, #eef5ff 100%);
+  box-shadow: 0 6px 16px rgba(18, 84, 179, 0.1);
+}
+
+.bottom-tab__icon svg,
+.main-shell .bottom-tab__icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.mobile-shell > .mobile-scroll > .screen > .banner,
+.mobile-shell > .admin-scroll > .banner,
+.leaderboard-upload-banner {
+  margin-top: 0;
+}

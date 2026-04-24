@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
   CalendarDays,
@@ -13,9 +13,17 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import { isSupabaseConfigured, supabase } from './lib/supabase'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
+
+const SUPABASE_TABLES = {
+  advisors: 'advisors',
+  campaigns: 'campaigns',
+  campaignRankings: 'campaign_rankings',
+  banners: 'page_banners',
+}
 
 const STORAGE_KEYS = {
   advisors: 'bvnt_advisors_v2',
@@ -34,12 +42,6 @@ const STATUS_OPTIONS = [
   { value: 'upcoming', label: 'Sắp diễn ra' },
   { value: 'ended', label: 'Đã kết thúc' },
 ]
-
-const moneyFormatter = new Intl.NumberFormat('vi-VN', {
-  style: 'currency',
-  currency: 'VND',
-  maximumFractionDigits: 0,
-})
 
 const compactMoneyFormatter = new Intl.NumberFormat('vi-VN', {
   minimumFractionDigits: 1,
@@ -242,6 +244,137 @@ const normalizeBanners = (value) => {
 const getBannerImage = (banners, pageId) =>
   typeof banners?.[pageId] === 'string' ? banners[pageId] : ''
 
+const rowsEqual = (left, right) => JSON.stringify(left) === JSON.stringify(right)
+
+const toAdvisorRow = (advisor, index = 0) => ({
+  id: String(advisor.id),
+  name: advisor.name ?? '',
+  team: advisor.team ?? '',
+  initials: advisor.initials ?? getInitials(advisor.name),
+  revenue: normalizeRevenue(advisor.revenue),
+  avatar: advisor.avatar ?? '',
+  sort_order: index,
+})
+
+const fromAdvisorRow = (row) => ({
+  id: row.id,
+  name: row.name ?? '',
+  team: row.team ?? '',
+  initials: row.initials ?? getInitials(row.name),
+  revenue: normalizeRevenue(row.revenue),
+  avatar: row.avatar ?? '',
+})
+
+const toCampaignRow = (campaign, index = 0) => ({
+  id: String(campaign.id),
+  title: campaign.title ?? '',
+  image: campaign.image ?? '',
+  start_date: campaign.startDate || null,
+  end_date: campaign.endDate || null,
+  status: campaign.status ?? 'active',
+  details: campaign.details ?? '',
+  sort_order: index,
+})
+
+const fromCampaignRow = (row) => ({
+  id: row.id,
+  title: row.title ?? '',
+  image: row.image ?? '',
+  startDate: row.start_date ?? '',
+  endDate: row.end_date ?? '',
+  status: row.status ?? 'active',
+  details: row.details ?? '',
+})
+
+const toCampaignRankingRow = (campaignId, advisor, index = 0) => ({
+  id: String(advisor.id),
+  campaign_id: String(campaignId),
+  name: advisor.name ?? '',
+  team: advisor.team ?? '',
+  initials: advisor.initials ?? getInitials(advisor.name),
+  revenue: normalizeRevenue(advisor.revenue),
+  avatar: advisor.avatar ?? '',
+  sort_order: index,
+})
+
+const fromCampaignRankingRows = (rows) =>
+  rows.reduce((items, row) => {
+    const campaignId = row.campaign_id
+    return {
+      ...items,
+      [campaignId]: [...safeArray(items[campaignId]), fromAdvisorRow(row)],
+    }
+  }, {})
+
+const toBannerRow = ([pageId, image]) => ({
+  page_id: pageId,
+  image: isValidBannerImage(image) ? image : '',
+})
+
+const fromBannerRows = (rows) =>
+  normalizeBanners(
+    rows.reduce((items, row) => ({ ...items, [row.page_id]: row.image ?? '' }), {}),
+  )
+
+const replaceTableRows = async (table, idColumn, rows) => {
+  const ids = rows.map((row) => String(row[idColumn]).replaceAll('"', '""'))
+  const query = supabase.from(table).delete()
+  const { error: deleteError } = ids.length
+    ? await query.not(idColumn, 'in', `("${ids.join('","')}")`)
+    : await query.neq(idColumn, '__autorank_keep_none__')
+
+  if (deleteError) throw deleteError
+  if (!rows.length) return
+
+  const { error } = await supabase.from(table).upsert(rows, { onConflict: idColumn })
+  if (error) throw error
+}
+
+const loadSupabaseData = async () => {
+  const [advisorsResult, campaignsResult, rankingsResult, bannersResult] = await Promise.all([
+    supabase.from(SUPABASE_TABLES.advisors).select('*').order('sort_order', { ascending: true }),
+    supabase.from(SUPABASE_TABLES.campaigns).select('*').order('sort_order', { ascending: true }),
+    supabase
+      .from(SUPABASE_TABLES.campaignRankings)
+      .select('*')
+      .order('campaign_id', { ascending: true })
+      .order('sort_order', { ascending: true }),
+    supabase.from(SUPABASE_TABLES.banners).select('*'),
+  ])
+
+  const results = [advisorsResult, campaignsResult, rankingsResult, bannersResult]
+  const failed = results.find((result) => result.error)
+  if (failed) throw failed.error
+
+  return {
+    advisors: advisorsResult.data.map(fromAdvisorRow),
+    campaigns: campaignsResult.data.map(fromCampaignRow),
+    campaignRankings: fromCampaignRankingRows(rankingsResult.data),
+    banners: fromBannerRows(bannersResult.data),
+    isEmpty:
+      !advisorsResult.data.length &&
+      !campaignsResult.data.length &&
+      !rankingsResult.data.length &&
+      !bannersResult.data.length,
+  }
+}
+
+const saveSupabaseData = async ({ advisors, campaigns, campaignRankings, banners }) => {
+  await replaceTableRows(SUPABASE_TABLES.advisors, 'id', advisors.map(toAdvisorRow))
+  await replaceTableRows(SUPABASE_TABLES.campaigns, 'id', campaigns.map(toCampaignRow))
+
+  const rankingRows = Object.entries(campaignRankings).flatMap(([campaignId, rows]) =>
+    safeArray(rows).map((advisor, index) => toCampaignRankingRow(campaignId, advisor, index)),
+  )
+  await replaceTableRows(SUPABASE_TABLES.campaignRankings, 'id', rankingRows)
+
+  await replaceTableRows(
+    SUPABASE_TABLES.banners,
+    'page_id',
+    Object.entries(normalizeBanners(banners)).map(toBannerRow),
+  )
+}
+
 const normalizeRevenue = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   const cleaned = String(value ?? '').replace(/[^\d.-]/g, '')
@@ -387,6 +520,8 @@ function usePathname() {
 function App() {
   const [pathname, navigate] = usePathname()
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false)
+  const hasHydratedSupabase = useRef(!isSupabaseConfigured)
+  const isApplyingRemoteData = useRef(false)
   const [advisors, setAdvisors] = useState(() =>
     safeArray(repairStoredText(readStorage(STORAGE_KEYS.advisors, defaultAdvisors)), defaultAdvisors),
   )
@@ -401,22 +536,105 @@ function App() {
     const stored = readStorage(STORAGE_KEYS.banners, defaultBanners)
     return normalizeBanners(stored)
   })
+  const initialSupabaseData = useRef(null)
+
+  if (initialSupabaseData.current == null) {
+    initialSupabaseData.current = {
+      advisors,
+      campaigns,
+      campaignRankings,
+      banners: normalizeBanners(banners),
+    }
+  }
 
   useEffect(() => {
+    if (!isSupabaseConfigured) return undefined
+
+    let isMounted = true
+    let reloadTimer = null
+
+    const applyRemoteData = (remoteData) => {
+      isApplyingRemoteData.current = true
+
+      setAdvisors((current) => (rowsEqual(current, remoteData.advisors) ? current : remoteData.advisors))
+      setCampaigns((current) => (rowsEqual(current, remoteData.campaigns) ? current : remoteData.campaigns))
+      setCampaignRankings((current) =>
+        rowsEqual(current, remoteData.campaignRankings) ? current : remoteData.campaignRankings,
+      )
+      setBanners((current) => {
+        const remoteBanners = normalizeBanners(remoteData.banners)
+        return rowsEqual(normalizeBanners(current), remoteBanners) ? current : remoteBanners
+      })
+
+      window.setTimeout(() => {
+        isApplyingRemoteData.current = false
+      }, 0)
+    }
+
+    const reloadFromSupabase = async () => {
+      try {
+        const remoteData = await loadSupabaseData()
+        if (!isMounted) return
+
+        if (remoteData.isEmpty) {
+          await saveSupabaseData(initialSupabaseData.current)
+        } else {
+          applyRemoteData(remoteData)
+        }
+
+        hasHydratedSupabase.current = true
+      } catch (supabaseError) {
+        console.error(supabaseError)
+        hasHydratedSupabase.current = true
+      }
+    }
+
+    const scheduleReload = () => {
+      window.clearTimeout(reloadTimer)
+      reloadTimer = window.setTimeout(reloadFromSupabase, 150)
+    }
+
+    reloadFromSupabase()
+
+    const channel = supabase
+      .channel('autorank-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.advisors }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.campaigns }, scheduleReload)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: SUPABASE_TABLES.campaignRankings },
+        scheduleReload,
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.banners }, scheduleReload)
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      window.clearTimeout(reloadTimer)
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isSupabaseConfigured) return
     writeStorage(STORAGE_KEYS.advisors, advisors)
-  }, [advisors])
-
-  useEffect(() => {
     writeStorage(STORAGE_KEYS.campaigns, campaigns)
-  }, [campaigns])
-
-  useEffect(() => {
     writeStorage(STORAGE_KEYS.campaignRankings, campaignRankings)
-  }, [campaignRankings])
+    writeStorage(STORAGE_KEYS.banners, normalizeBanners(banners))
+  }, [advisors, campaigns, campaignRankings, banners])
 
   useEffect(() => {
-    writeStorage(STORAGE_KEYS.banners, normalizeBanners(banners))
-  }, [banners])
+    if (!isSupabaseConfigured || !hasHydratedSupabase.current || isApplyingRemoteData.current) return
+
+    saveSupabaseData({
+      advisors,
+      campaigns,
+      campaignRankings,
+      banners: normalizeBanners(banners),
+    }).catch((supabaseError) => {
+      console.error(supabaseError)
+    })
+  }, [advisors, campaigns, campaignRankings, banners])
 
   if (pathname === '/admin') {
     return (
@@ -443,7 +661,6 @@ function App() {
       campaignRankings={campaignRankings}
       banners={banners}
       setBanners={setBanners}
-      isAdminLoggedIn={isAdminLoggedIn}
       navigate={navigate}
     />
   )
@@ -466,7 +683,6 @@ function MainView({
   campaignRankings,
   banners,
   setBanners,
-  isAdminLoggedIn,
   navigate,
 }) {
   const [activeTab, setActiveTab] = useState('bang-vang')
@@ -539,7 +755,6 @@ function MainView({
               podium={podium}
               rankingRows={rankingRows}
               bannerImage={getBannerImage(banners, 'bang-vang')}
-              canEditBanner={isAdminLoggedIn}
               onBannerUpload={(file) => updatePageBanner('bang-vang', file)}
               onAdminAccess={() => navigate('/admin')}
             />
@@ -559,7 +774,6 @@ function MainView({
                 setModalType('ranking')
               }}
               bannerImage={getBannerImage(banners, 'thi-dua')}
-              canEditBanner={isAdminLoggedIn}
               onBannerUpload={(file) => updatePageBanner('thi-dua', file)}
               onAdminAccess={() => navigate('/admin')}
             />
@@ -584,7 +798,6 @@ function BangVangTab({
   podium,
   rankingRows,
   bannerImage,
-  canEditBanner,
   onBannerUpload,
   onAdminAccess,
 }) {
@@ -641,7 +854,6 @@ function ThiDuaTab({
   onOpenDetail,
   onOpenRanking,
   bannerImage,
-  canEditBanner,
   onBannerUpload,
   onAdminAccess,
 }) {
@@ -1330,6 +1542,23 @@ function AdminView({
 
             {activeAdminTab === 'advisors' && (
               <section className="admin-section">
+                <div className="admin-section__head">
+                  <div>
+                    <h2>Tư vấn viên</h2>
+                    <p>Quản lý Top bảng vàng.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="button-primary"
+                    aria-label="Thêm tư vấn viên"
+                    onClick={addAdvisor}
+                  >
+                    <span className="round-icon button-icon">
+                      <Plus size={18} />
+                    </span>
+                  </button>
+                </div>
+
                 <ImportTools
                   remoteUrl={advisorRemoteUrl}
                   setRemoteUrl={setAdvisorRemoteUrl}
@@ -1759,7 +1988,7 @@ function BannerManager({ banners, onUpload, onReset }) {
       <div className="admin-section__head">
         <div>
           <h2>Banner</h2>
-          <p>Upload ảnh banner riêng cho từng page. Ảnh được lưu localStorage và đổi ngay trên app.</p>
+          <p>Upload ảnh banner riêng cho từng page. Ảnh được lưu Supabase và đổi ngay trên app.</p>
         </div>
       </div>
 
@@ -1873,7 +2102,7 @@ function PreviewPanel({ title, source, rows, onApply, onClear }) {
             Xóa preview
           </button>
           <button type="button" className="button-primary" onClick={onApply}>
-            Lưu vào localStorage
+            Lưu vào Supabase
           </button>
         </div>
       </div>
