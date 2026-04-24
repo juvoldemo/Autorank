@@ -1,0 +1,17 @@
+{
+  "name": "BVNT Kh\u00e1nh H\u00f2a",
+  "short_name": "BVNTKH",
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "background_color": "#F4F7FB",
+  "theme_color": "#0B3D91",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

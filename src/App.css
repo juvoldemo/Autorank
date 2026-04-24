@@ -3374,3 +3374,99 @@
     max-width: none;
   }
 }
+
+/* iOS Safari: keep body/window as the primary scroller so browser chrome can collapse. */
+html,
+body,
+#root {
+  min-height: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-page {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
+  align-items: stretch;
+}
+
+.mobile-shell {
+  width: 100%;
+  max-width: 450px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
+  max-height: none;
+  margin-right: auto;
+  margin-left: auto;
+  overflow: visible;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0;
+}
+
+.main-shell,
+.admin-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
+  padding: 0;
+  overflow: visible;
+}
+
+.mobile-content,
+.mobile-scroll,
+.admin-scroll {
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+.main-shell .mobile-scroll {
+  padding-bottom: calc(112px + env(safe-area-inset-bottom));
+}
+
+.admin-scroll {
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
+}
+
+.bottom-tabs,
+.main-shell .bottom-tabs {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  width: auto;
+  max-width: 426px;
+  margin-right: auto;
+  margin-left: auto;
+  padding-bottom: calc(5px + env(safe-area-inset-bottom));
+  transform: none;
+}
+
+.campaign-modal-overlay {
+  position: fixed;
+  overflow: hidden;
+}
+
+@media (min-width: 760px) {
+  .mobile-shell,
+  .main-shell,
+  .admin-shell {
+    min-height: 100vh;
+    min-height: 100dvh;
+    height: auto;
+  }
+}
