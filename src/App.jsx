@@ -256,20 +256,21 @@ const fromAdvisorRow = (row) => ({
 const toCampaignRow = (campaign) => ({
   id: String(campaign.id),
   title: campaign.title ?? '',
-  poster: campaign.image ?? campaign.poster ?? campaign.image_url ?? '',
-  start_date: campaign.startDate || null,
-  end_date: campaign.endDate || null,
+  poster: campaign.poster ?? campaign.image ?? campaign.image_url ?? '',
+  start_date: (campaign.start_date ?? campaign.startDate) || null,
+  end_date: (campaign.end_date ?? campaign.endDate) || null,
   summary: campaign.summary ?? campaign.details ?? '',
   details: campaign.details ?? campaign.summary ?? '',
   reward: campaign.reward ?? '',
   target: campaign.target ?? '',
   rules: campaign.rules ?? '',
-  published: campaign.published ?? campaign.status !== 'ended',
+  published: campaign.status ? campaign.status !== 'ended' : campaign.published ?? true,
 })
 
 const fromCampaignRow = (row) => ({
   id: row.id,
   title: row.title ?? '',
+  poster: row.poster ?? row.image_url ?? '',
   image: row.poster ?? row.image_url ?? '',
   startDate: row.start_date ?? '',
   endDate: row.end_date ?? '',
@@ -326,10 +327,21 @@ const replaceTableRows = async (table, idColumn, rows) => {
   if (error) throw error
 }
 
+const fetchCompetitionRows = async () => {
+  console.log('loading competitions from supabase')
+  const { data, error } = await supabase
+    .from('competitions')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data ?? []
+}
+
 const loadSupabaseData = async () => {
-  const [advisorsResult, campaignsResult, rankingsResult, bannersResult] = await Promise.all([
+  const [advisorsResult, campaignRows, rankingsResult, bannersResult] = await Promise.all([
     supabase.from(SUPABASE_TABLES.advisors).select('*').order('sort_order', { ascending: true }),
-    supabase.from("competitions").select("*").order('created_at', { ascending: true }),
+    fetchCompetitionRows(),
     supabase
       .from(SUPABASE_TABLES.campaignRankings)
       .select('*')
@@ -338,28 +350,26 @@ const loadSupabaseData = async () => {
     supabase.from(SUPABASE_TABLES.banners).select('*'),
   ])
 
-  const results = [advisorsResult, campaignsResult, rankingsResult, bannersResult]
+  const results = [advisorsResult, rankingsResult, bannersResult]
   const failed = results.find((result) => result.error)
   if (failed) throw failed.error
-  console.log('Loaded competitions from Supabase', campaignsResult.data)
+  console.log('Loaded competitions from Supabase', campaignRows)
 
   return {
     advisors: advisorsResult.data.map(fromAdvisorRow),
-    campaigns: campaignsResult.data.map(fromCampaignRow),
+    campaigns: campaignRows.map(fromCampaignRow),
     campaignRankings: fromCampaignRankingRows(rankingsResult.data),
     banners: fromBannerRows(bannersResult.data),
     isEmpty:
       !advisorsResult.data.length &&
-      !campaignsResult.data.length &&
+      !campaignRows.length &&
       !rankingsResult.data.length &&
       !bannersResult.data.length,
   }
 }
 
-const saveSupabaseData = async ({ advisors, campaigns, campaignRankings, banners }) => {
+const saveSupabaseData = async ({ advisors, campaignRankings, banners }) => {
   await replaceTableRows(SUPABASE_TABLES.advisors, 'id', advisors.map(toAdvisorRow))
-  await replaceTableRows(SUPABASE_TABLES.campaigns, 'id', campaigns.map(toCampaignRow))
-  console.log('Saved competition to Supabase')
 
   const rankingRows = Object.entries(campaignRankings).flatMap(([campaignId, rows]) =>
     safeArray(rows).map((advisor, index) => toCampaignRankingRow(campaignId, advisor, index)),
@@ -374,19 +384,33 @@ const saveSupabaseData = async ({ advisors, campaigns, campaignRankings, banners
 }
 
 const saveCompetitionToSupabase = async (competition) => {
-  if (!isSupabaseConfigured) return
-  const { error } = await supabase
+  if (!isSupabaseConfigured) {
+    throw new Error('Thiếu cấu hình Supabase. Không thể lưu chương trình thi đua.')
+  }
+
+  const row = toCampaignRow(competition)
+  console.log('saving competition to supabase', row)
+  const { data, error } = await supabase
     .from('competitions')
-    .upsert(toCampaignRow(competition), { onConflict: 'id' })
-  if (error) throw error
-  console.log('Saved competition to Supabase', competition.id)
+    .upsert(row, { onConflict: 'id' })
+    .select('*')
+
+  if (error) {
+    console.error('supabase insert error', error)
+    throw error
+  }
+
+  console.log('supabase insert success', data)
+  return data
 }
 
 const deleteCompetitionFromSupabase = async (id) => {
-  if (!isSupabaseConfigured) return
+  if (!isSupabaseConfigured) {
+    throw new Error('Thiếu cấu hình Supabase. Không thể xóa chương trình thi đua.')
+  }
   const { error } = await supabase.from('competitions').delete().eq('id', id)
   if (error) throw error
-  console.log('Saved competition to Supabase', id)
+  console.log('Deleted competition from Supabase', id)
 }
 
 const getFileExtension = (file) => {
@@ -566,16 +590,6 @@ function App() {
     return defaults && typeof defaults === 'object' ? defaults : defaultCampaignRankings
   })
   const [banners, setBanners] = useState(() => normalizeBanners(defaultBanners))
-  const initialSupabaseData = useRef(null)
-
-  if (initialSupabaseData.current == null) {
-    initialSupabaseData.current = {
-      advisors,
-      campaigns,
-      campaignRankings,
-      banners: normalizeBanners(banners),
-    }
-  }
 
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
@@ -595,12 +609,13 @@ function App() {
     }, 0)
   }, [])
 
-  const fetchSupabaseData = useCallback(async () => {
-    if (!isSupabaseConfigured) return null
-    const remoteData = await loadSupabaseData()
-    applyRemoteData(remoteData)
-    return remoteData
-  }, [applyRemoteData])
+  const fetchCompetitions = useCallback(async () => {
+    if (!isSupabaseConfigured) return []
+    const rows = await fetchCompetitionRows()
+    const remoteCampaigns = rows.map(fromCampaignRow)
+    setCampaigns((current) => (rowsEqual(current, remoteCampaigns) ? current : remoteCampaigns))
+    return remoteCampaigns
+  }, [])
 
   useEffect(() => {
     if (!isSupabaseConfigured) return undefined
@@ -613,15 +628,12 @@ function App() {
         const remoteData = await loadSupabaseData()
         if (!isMounted) return
 
-        if (remoteData.isEmpty) {
-          await saveSupabaseData(initialSupabaseData.current)
-        } else {
-          applyRemoteData(remoteData)
-        }
+        applyRemoteData(remoteData)
 
         hasHydratedSupabase.current = true
       } catch (supabaseError) {
         console.error(supabaseError)
+        window.alert(`Không thể tải dữ liệu từ Supabase: ${supabaseError?.message ?? supabaseError}`)
         hasHydratedSupabase.current = true
       }
     }
@@ -657,13 +669,12 @@ function App() {
 
     saveSupabaseData({
       advisors,
-      campaigns,
       campaignRankings,
       banners: normalizeBanners(banners),
     }).catch((supabaseError) => {
       console.error(supabaseError)
     })
-  }, [advisors, campaigns, campaignRankings, banners])
+  }, [advisors, campaignRankings, banners])
 
   if (pathname === '/admin') {
     return (
@@ -678,7 +689,7 @@ function App() {
         setCampaignRankings={setCampaignRankings}
         setBanners={setBanners}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
-        fetchSupabaseData={fetchSupabaseData}
+        fetchCompetitions={fetchCompetitions}
         navigate={navigate}
       />
     )
@@ -1184,7 +1195,7 @@ function AdminView({
   setCampaignRankings,
   setBanners,
   setIsAdminLoggedIn,
-  fetchSupabaseData,
+  fetchCompetitions,
   navigate,
 }) {
   const [username, setUsername] = useState('')
@@ -1199,6 +1210,11 @@ function AdminView({
   const [advisorImportError, setAdvisorImportError] = useState('')
   const [advisorImportMessage, setAdvisorImportMessage] = useState('')
   const [campaignImportState, setCampaignImportState] = useState({})
+
+  const alertSupabaseError = (action, supabaseError) => {
+    console.error(action, supabaseError)
+    window.alert(`${action}: ${supabaseError?.message ?? supabaseError}`)
+  }
 
   const handleLogin = (event) => {
     event.preventDefault()
@@ -1246,76 +1262,58 @@ function AdminView({
   }
 
   const updateCampaign = async (id, field, value) => {
-    let nextCampaign = null
-    setCampaigns((current) =>
-      current.map((campaign) => {
-        if (campaign.id !== id) return campaign
-        nextCampaign = { ...campaign, [field]: value }
-        return nextCampaign
-      }),
-    )
+    const currentCampaign = campaigns.find((campaign) => campaign.id === id)
+    if (!currentCampaign) return
+    const nextCampaign = { ...currentCampaign, [field]: value }
 
-    if (!nextCampaign) return
     try {
       await saveCompetitionToSupabase(nextCampaign)
-      await fetchSupabaseData()
+      await fetchCompetitions()
     } catch (supabaseError) {
-      console.error(supabaseError)
+      alertSupabaseError('Không thể lưu chương trình thi đua lên Supabase', supabaseError)
     }
   }
 
   const addCampaign = async () => {
     const id = generateId('campaign')
-    setCampaigns((current) => [
-      ...current,
-      {
-        id,
-        title: 'Chương trình mới',
-        image: '',
-        startDate: '2026-05-01',
-        endDate: '2026-05-31',
-        status: 'active',
-        details: 'Mô tả chương trình',
-      },
-    ])
-    setCampaignRankings((current) => ({ ...current, [id]: [] }))
-    setExpandedCampaignId(id)
+    const newCampaign = {
+      id,
+      title: 'Chương trình mới',
+      poster: '',
+      image: '',
+      startDate: '2026-05-01',
+      endDate: '2026-05-31',
+      status: 'active',
+      details: 'Mô tả chương trình',
+      summary: 'Mô tả chương trình',
+      reward: '',
+      target: '',
+      rules: '',
+      published: true,
+    }
 
     try {
-      await saveCompetitionToSupabase({
-        id,
-        title: 'Chương trình mới',
-        image: '',
-        startDate: '2026-05-01',
-        endDate: '2026-05-31',
-        status: 'active',
-        details: 'Mô tả chương trình',
-        summary: 'Mô tả chương trình',
-        reward: '',
-        target: '',
-        rules: '',
-        published: true,
-      })
-      await fetchSupabaseData()
+      await saveCompetitionToSupabase(newCampaign)
+      await fetchCompetitions()
+      setCampaignRankings((current) => ({ ...current, [id]: [] }))
+      setExpandedCampaignId(id)
     } catch (supabaseError) {
-      console.error(supabaseError)
+      alertSupabaseError('Không thể thêm chương trình thi đua vào Supabase', supabaseError)
     }
   }
 
   const deleteCampaign = async (id) => {
-    setCampaigns((current) => current.filter((campaign) => campaign.id !== id))
-    setCampaignRankings((current) => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    if (expandedCampaignId === id) setExpandedCampaignId(null)
-
     try {
       await deleteCompetitionFromSupabase(id)
-      await fetchSupabaseData()
+      await fetchCompetitions()
+      setCampaignRankings((current) => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      if (expandedCampaignId === id) setExpandedCampaignId(null)
     } catch (supabaseError) {
-      console.error(supabaseError)
+      alertSupabaseError('Không thể xóa chương trình thi đua khỏi Supabase', supabaseError)
     }
   }
 
@@ -1381,9 +1379,9 @@ function AdminView({
   const handleCampaignImageUpload = async (id, file) => {
     try {
       const image = await uploadImageToStorage(file, `campaigns/${id}`)
-      await updateCampaign(id, 'image', image)
+      await updateCampaign(id, 'poster', image)
     } catch (uploadError) {
-      console.error(uploadError)
+      alertSupabaseError('Không thể upload poster chương trình lên Supabase Storage', uploadError)
     }
   }
 
