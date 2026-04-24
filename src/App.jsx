@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
   CalendarDays,
@@ -20,17 +20,12 @@ import './App.css'
 
 const SUPABASE_TABLES = {
   advisors: 'advisors',
-  campaigns: 'campaigns',
+  campaigns: 'competitions',
   campaignRankings: 'campaign_rankings',
   banners: 'page_banners',
 }
 
-const STORAGE_KEYS = {
-  advisors: 'bvnt_advisors_v2',
-  campaigns: 'bvnt_campaigns_v2',
-  campaignRankings: 'bvnt_campaign_rankings_v2',
-  banners: 'bvnt_page_banners_v1',
-}
+const SUPABASE_BUCKET = 'autorank-assets'
 
 const ADMIN_CREDENTIALS = {
   username: 'bvntkh',
@@ -194,17 +189,6 @@ const normalizeTeamName = (teamName) => {
 
 const displayTeamName = (teamName) => normalizeTeamName(teamName) || 'Chưa cập nhật'
 
-const readStorage = (key, fallback) => {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw)
-    return parsed ?? fallback
-  } catch {
-    return fallback
-  }
-}
-
 const repairStoredText = (value) => {
   if (typeof value === 'string') return TEXT_REPAIRS[value] ?? value
   if (Array.isArray(value)) return value.map(repairStoredText)
@@ -215,19 +199,9 @@ const repairStoredText = (value) => {
   )
 }
 
-const writeStorage = (key, value) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-    return true
-  } catch (storageError) {
-    console.error(storageError)
-    return false
-  }
-}
-
 const isValidBannerImage = (image) =>
   typeof image === 'string' &&
-  (image === '' || image.startsWith('data:image/') || /^https?:\/\//i.test(image))
+  (image === '' || /^https?:\/\//i.test(image))
 
 const normalizeBanners = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...defaultBanners }
@@ -245,6 +219,20 @@ const getBannerImage = (banners, pageId) =>
   typeof banners?.[pageId] === 'string' ? banners[pageId] : ''
 
 const rowsEqual = (left, right) => JSON.stringify(left) === JSON.stringify(right)
+
+const getCompetitionStatus = (competition) => {
+  if (competition?.published === false) return 'ended'
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const startDate = parseLocalDate(competition?.start_date ?? competition?.startDate)
+  const endDate = parseLocalDate(competition?.end_date ?? competition?.endDate)
+
+  if (startDate && startDate > today) return 'upcoming'
+  if (endDate && endDate < today) return 'ended'
+  return 'active'
+}
 
 const toAdvisorRow = (advisor, index = 0) => ({
   id: String(advisor.id),
@@ -265,25 +253,33 @@ const fromAdvisorRow = (row) => ({
   avatar: row.avatar ?? '',
 })
 
-const toCampaignRow = (campaign, index = 0) => ({
+const toCampaignRow = (campaign) => ({
   id: String(campaign.id),
   title: campaign.title ?? '',
-  image: campaign.image ?? '',
+  poster: campaign.image ?? campaign.poster ?? campaign.image_url ?? '',
   start_date: campaign.startDate || null,
   end_date: campaign.endDate || null,
-  status: campaign.status ?? 'active',
-  details: campaign.details ?? '',
-  sort_order: index,
+  summary: campaign.summary ?? campaign.details ?? '',
+  details: campaign.details ?? campaign.summary ?? '',
+  reward: campaign.reward ?? '',
+  target: campaign.target ?? '',
+  rules: campaign.rules ?? '',
+  published: campaign.published ?? campaign.status !== 'ended',
 })
 
 const fromCampaignRow = (row) => ({
   id: row.id,
   title: row.title ?? '',
-  image: row.image ?? '',
+  image: row.poster ?? row.image_url ?? '',
   startDate: row.start_date ?? '',
   endDate: row.end_date ?? '',
-  status: row.status ?? 'active',
-  details: row.details ?? '',
+  status: getCompetitionStatus(row),
+  summary: row.summary ?? '',
+  details: row.details ?? row.summary ?? '',
+  reward: row.reward ?? '',
+  target: row.target ?? '',
+  rules: row.rules ?? '',
+  published: row.published ?? true,
 })
 
 const toCampaignRankingRow = (campaignId, advisor, index = 0) => ({
@@ -333,7 +329,7 @@ const replaceTableRows = async (table, idColumn, rows) => {
 const loadSupabaseData = async () => {
   const [advisorsResult, campaignsResult, rankingsResult, bannersResult] = await Promise.all([
     supabase.from(SUPABASE_TABLES.advisors).select('*').order('sort_order', { ascending: true }),
-    supabase.from(SUPABASE_TABLES.campaigns).select('*').order('sort_order', { ascending: true }),
+    supabase.from("competitions").select("*").order('created_at', { ascending: true }),
     supabase
       .from(SUPABASE_TABLES.campaignRankings)
       .select('*')
@@ -345,6 +341,7 @@ const loadSupabaseData = async () => {
   const results = [advisorsResult, campaignsResult, rankingsResult, bannersResult]
   const failed = results.find((result) => result.error)
   if (failed) throw failed.error
+  console.log('Loaded competitions from Supabase', campaignsResult.data)
 
   return {
     advisors: advisorsResult.data.map(fromAdvisorRow),
@@ -362,6 +359,7 @@ const loadSupabaseData = async () => {
 const saveSupabaseData = async ({ advisors, campaigns, campaignRankings, banners }) => {
   await replaceTableRows(SUPABASE_TABLES.advisors, 'id', advisors.map(toAdvisorRow))
   await replaceTableRows(SUPABASE_TABLES.campaigns, 'id', campaigns.map(toCampaignRow))
+  console.log('Saved competition to Supabase')
 
   const rankingRows = Object.entries(campaignRankings).flatMap(([campaignId, rows]) =>
     safeArray(rows).map((advisor, index) => toCampaignRankingRow(campaignId, advisor, index)),
@@ -373,6 +371,51 @@ const saveSupabaseData = async ({ advisors, campaigns, campaignRankings, banners
     'page_id',
     Object.entries(normalizeBanners(banners)).map(toBannerRow),
   )
+}
+
+const saveCompetitionToSupabase = async (competition) => {
+  if (!isSupabaseConfigured) return
+  const { error } = await supabase
+    .from('competitions')
+    .upsert(toCampaignRow(competition), { onConflict: 'id' })
+  if (error) throw error
+  console.log('Saved competition to Supabase', competition.id)
+}
+
+const deleteCompetitionFromSupabase = async (id) => {
+  if (!isSupabaseConfigured) return
+  const { error } = await supabase.from('competitions').delete().eq('id', id)
+  if (error) throw error
+  console.log('Saved competition to Supabase', id)
+}
+
+const getFileExtension = (file) => {
+  const fromName = file?.name?.split('.').pop()
+  if (fromName && fromName !== file.name) return fromName.toLowerCase()
+  return file?.type?.split('/').pop()?.toLowerCase() || 'png'
+}
+
+const uploadImageToStorage = async (file, folder) => {
+  if (!isSupabaseConfigured) {
+    throw new Error('Thiếu cấu hình Supabase. Hãy đặt VITE_SUPABASE_URL và VITE_SUPABASE_ANON_KEY.')
+  }
+  if (!file?.type?.startsWith('image/')) return ''
+
+  const extension = getFileExtension(file)
+  const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`
+  const { error: uploadError } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .upload(path, file, {
+      cacheControl: '31536000',
+      upsert: false,
+      contentType: file.type,
+    })
+
+  if (uploadError) throw uploadError
+
+  const { data } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path)
+  console.log('Upload image to Supabase Storage success', data.publicUrl)
+  return data.publicUrl
 }
 
 const normalizeRevenue = (value) => {
@@ -414,16 +457,6 @@ const getCampaignTimeBadge = (campaign) => {
 
 const sortByRevenueDesc = (rows) =>
   [...rows].sort((a, b) => Number(b.revenue || 0) - Number(a.revenue || 0))
-
-async function fileToDataUrl(file) {
-  if (!file) return ''
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
-    reader.onerror = () => reject(new Error('Không thể đọc file.'))
-    reader.readAsDataURL(file)
-  })
-}
 
 function normalizeImportedAdvisor(raw) {
   const name =
@@ -523,19 +556,16 @@ function App() {
   const hasHydratedSupabase = useRef(!isSupabaseConfigured)
   const isApplyingRemoteData = useRef(false)
   const [advisors, setAdvisors] = useState(() =>
-    safeArray(repairStoredText(readStorage(STORAGE_KEYS.advisors, defaultAdvisors)), defaultAdvisors),
+    safeArray(repairStoredText(defaultAdvisors), defaultAdvisors),
   )
   const [campaigns, setCampaigns] = useState(() =>
-    safeArray(repairStoredText(readStorage(STORAGE_KEYS.campaigns, defaultCampaigns)), defaultCampaigns),
+    safeArray(repairStoredText(defaultCampaigns), defaultCampaigns),
   )
   const [campaignRankings, setCampaignRankings] = useState(() => {
-    const stored = repairStoredText(readStorage(STORAGE_KEYS.campaignRankings, defaultCampaignRankings))
-    return stored && typeof stored === 'object' ? stored : defaultCampaignRankings
+    const defaults = repairStoredText(defaultCampaignRankings)
+    return defaults && typeof defaults === 'object' ? defaults : defaultCampaignRankings
   })
-  const [banners, setBanners] = useState(() => {
-    const stored = readStorage(STORAGE_KEYS.banners, defaultBanners)
-    return normalizeBanners(stored)
-  })
+  const [banners, setBanners] = useState(() => normalizeBanners(defaultBanners))
   const initialSupabaseData = useRef(null)
 
   if (initialSupabaseData.current == null) {
@@ -547,29 +577,36 @@ function App() {
     }
   }
 
+  const applyRemoteData = useCallback((remoteData) => {
+    isApplyingRemoteData.current = true
+
+    setAdvisors((current) => (rowsEqual(current, remoteData.advisors) ? current : remoteData.advisors))
+    setCampaigns((current) => (rowsEqual(current, remoteData.campaigns) ? current : remoteData.campaigns))
+    setCampaignRankings((current) =>
+      rowsEqual(current, remoteData.campaignRankings) ? current : remoteData.campaignRankings,
+    )
+    setBanners((current) => {
+      const remoteBanners = normalizeBanners(remoteData.banners)
+      return rowsEqual(normalizeBanners(current), remoteBanners) ? current : remoteBanners
+    })
+
+    window.setTimeout(() => {
+      isApplyingRemoteData.current = false
+    }, 0)
+  }, [])
+
+  const fetchSupabaseData = useCallback(async () => {
+    if (!isSupabaseConfigured) return null
+    const remoteData = await loadSupabaseData()
+    applyRemoteData(remoteData)
+    return remoteData
+  }, [applyRemoteData])
+
   useEffect(() => {
     if (!isSupabaseConfigured) return undefined
 
     let isMounted = true
     let reloadTimer = null
-
-    const applyRemoteData = (remoteData) => {
-      isApplyingRemoteData.current = true
-
-      setAdvisors((current) => (rowsEqual(current, remoteData.advisors) ? current : remoteData.advisors))
-      setCampaigns((current) => (rowsEqual(current, remoteData.campaigns) ? current : remoteData.campaigns))
-      setCampaignRankings((current) =>
-        rowsEqual(current, remoteData.campaignRankings) ? current : remoteData.campaignRankings,
-      )
-      setBanners((current) => {
-        const remoteBanners = normalizeBanners(remoteData.banners)
-        return rowsEqual(normalizeBanners(current), remoteBanners) ? current : remoteBanners
-      })
-
-      window.setTimeout(() => {
-        isApplyingRemoteData.current = false
-      }, 0)
-    }
 
     const reloadFromSupabase = async () => {
       try {
@@ -613,15 +650,7 @@ function App() {
       window.clearTimeout(reloadTimer)
       supabase.removeChannel(channel)
     }
-  }, [])
-
-  useEffect(() => {
-    if (isSupabaseConfigured) return
-    writeStorage(STORAGE_KEYS.advisors, advisors)
-    writeStorage(STORAGE_KEYS.campaigns, campaigns)
-    writeStorage(STORAGE_KEYS.campaignRankings, campaignRankings)
-    writeStorage(STORAGE_KEYS.banners, normalizeBanners(banners))
-  }, [advisors, campaigns, campaignRankings, banners])
+  }, [applyRemoteData])
 
   useEffect(() => {
     if (!isSupabaseConfigured || !hasHydratedSupabase.current || isApplyingRemoteData.current) return
@@ -649,6 +678,7 @@ function App() {
         setCampaignRankings={setCampaignRankings}
         setBanners={setBanners}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
+        fetchSupabaseData={fetchSupabaseData}
         navigate={navigate}
       />
     )
@@ -710,7 +740,7 @@ function MainView({
     if (!bannerPageIds.has(pageId) || !file?.type?.startsWith('image/')) return
 
     try {
-      const image = await fileToDataUrl(file)
+      const image = await uploadImageToStorage(file, `banners/${pageId}`)
       if (!image) return
       setBanners((current) => ({ ...normalizeBanners(current), [pageId]: image }))
     } catch (uploadError) {
@@ -1154,6 +1184,7 @@ function AdminView({
   setCampaignRankings,
   setBanners,
   setIsAdminLoggedIn,
+  fetchSupabaseData,
   navigate,
 }) {
   const [username, setUsername] = useState('')
@@ -1214,13 +1245,26 @@ function AdminView({
     if (expandedAdvisorId === id) setExpandedAdvisorId(null)
   }
 
-  const updateCampaign = (id, field, value) => {
+  const updateCampaign = async (id, field, value) => {
+    let nextCampaign = null
     setCampaigns((current) =>
-      current.map((campaign) => (campaign.id === id ? { ...campaign, [field]: value } : campaign)),
+      current.map((campaign) => {
+        if (campaign.id !== id) return campaign
+        nextCampaign = { ...campaign, [field]: value }
+        return nextCampaign
+      }),
     )
+
+    if (!nextCampaign) return
+    try {
+      await saveCompetitionToSupabase(nextCampaign)
+      await fetchSupabaseData()
+    } catch (supabaseError) {
+      console.error(supabaseError)
+    }
   }
 
-  const addCampaign = () => {
+  const addCampaign = async () => {
     const id = generateId('campaign')
     setCampaigns((current) => [
       ...current,
@@ -1236,9 +1280,29 @@ function AdminView({
     ])
     setCampaignRankings((current) => ({ ...current, [id]: [] }))
     setExpandedCampaignId(id)
+
+    try {
+      await saveCompetitionToSupabase({
+        id,
+        title: 'Chương trình mới',
+        image: '',
+        startDate: '2026-05-01',
+        endDate: '2026-05-31',
+        status: 'active',
+        details: 'Mô tả chương trình',
+        summary: 'Mô tả chương trình',
+        reward: '',
+        target: '',
+        rules: '',
+        published: true,
+      })
+      await fetchSupabaseData()
+    } catch (supabaseError) {
+      console.error(supabaseError)
+    }
   }
 
-  const deleteCampaign = (id) => {
+  const deleteCampaign = async (id) => {
     setCampaigns((current) => current.filter((campaign) => campaign.id !== id))
     setCampaignRankings((current) => {
       const next = { ...current }
@@ -1246,6 +1310,13 @@ function AdminView({
       return next
     })
     if (expandedCampaignId === id) setExpandedCampaignId(null)
+
+    try {
+      await deleteCompetitionFromSupabase(id)
+      await fetchSupabaseData()
+    } catch (supabaseError) {
+      console.error(supabaseError)
+    }
   }
 
   const updateCampaignRanking = (campaignId, id, field, value) => {
@@ -1293,7 +1364,10 @@ function AdminView({
 
   const handleAvatarUpload = async (id, file, scope, campaignId) => {
     try {
-      const avatar = await fileToDataUrl(file)
+      const avatar = await uploadImageToStorage(
+        file,
+        scope === 'advisors' ? `advisors/${id}` : `campaign-rankings/${campaignId}/${id}`,
+      )
       if (scope === 'advisors') {
         updateAdvisor(id, 'avatar', avatar)
         return
@@ -1306,8 +1380,8 @@ function AdminView({
 
   const handleCampaignImageUpload = async (id, file) => {
     try {
-      const image = await fileToDataUrl(file)
-      updateCampaign(id, 'image', image)
+      const image = await uploadImageToStorage(file, `campaigns/${id}`)
+      await updateCampaign(id, 'image', image)
     } catch (uploadError) {
       console.error(uploadError)
     }
@@ -1455,7 +1529,7 @@ function AdminView({
     if (!bannerPageIds.has(pageId) || !file?.type?.startsWith('image/')) return
 
     try {
-      const image = await fileToDataUrl(file)
+      const image = await uploadImageToStorage(file, `banners/${pageId}`)
       if (!image) return
       setBanners((current) => ({ ...normalizeBanners(current), [pageId]: image }))
     } catch (uploadError) {
