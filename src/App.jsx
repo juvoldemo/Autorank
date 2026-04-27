@@ -979,6 +979,7 @@ function MainView({
   const [activeTab, setActiveTab] = useState('bang-vang')
   const [activeScreen, setActiveScreen] = useState('main')
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const menuTabRef = useRef(null)
   const [rankingPeriod, setRankingPeriod] = useState('month')
   const [leaderboardAnimationKey, setLeaderboardAnimationKey] = useState(0)
   const [competitionFilter, setCompetitionFilter] = useState('active')
@@ -1089,6 +1090,18 @@ function MainView({
     ended: campaigns.filter((item) => item.status === 'ended').length,
   }
 
+  useEffect(() => {
+    if (!isMoreMenuOpen) return undefined
+
+    const handlePointerDown = (event) => {
+      if (menuTabRef.current?.contains(event.target)) return
+      setIsMoreMenuOpen(false)
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    return () => window.removeEventListener('pointerdown', handlePointerDown)
+  }, [isMoreMenuOpen])
+
   const closeModal = () => {
     setSelectedCampaign(null)
     setModalType(null)
@@ -1132,16 +1145,26 @@ function MainView({
           </button>
         )
       })}
-      <button
-        type="button"
-        className={`bottom-tab ${isMoreMenuOpen ? 'is-active' : ''}`}
-        onClick={() => setIsMoreMenuOpen(true)}
-      >
-        <span className="round-icon bottom-tab__icon">
-          <Menu size={20} />
-        </span>
-        <span className="bottom-tab__label">Menu</span>
-      </button>
+      <div className="menu-tab-wrapper" ref={menuTabRef}>
+        <button
+          type="button"
+          className={`bottom-tab ${isMoreMenuOpen ? 'is-active' : ''}`}
+          onClick={() => setIsMoreMenuOpen((current) => !current)}
+        >
+          <span className="round-icon bottom-tab__icon">
+            <Menu size={20} />
+          </span>
+          <span className="bottom-tab__label">Menu</span>
+        </button>
+        <MoreMenuBottomSheet
+          open={isMoreMenuOpen}
+          onClose={() => setIsMoreMenuOpen(false)}
+          onOpenTbtn={() => {
+            setIsMoreMenuOpen(false)
+            setActiveScreen('tbtn')
+          }}
+        />
+      </div>
     </nav>
   )
 
@@ -1199,15 +1222,6 @@ function MainView({
             />
           )}
       </main>
-
-        <MoreMenuBottomSheet
-          open={isMoreMenuOpen}
-          onClose={() => setIsMoreMenuOpen(false)}
-          onOpenTbtn={() => {
-            setIsMoreMenuOpen(false)
-            setActiveScreen('tbtn')
-          }}
-        />
 
         {selectedCampaign && modalType === 'detail' && (
           <DetailModal campaign={selectedCampaign} onClose={closeModal} />
@@ -2878,34 +2892,31 @@ function MoreMenuBottomSheet({ open, onClose, onOpenTbtn }) {
   if (!open) return null
 
   return (
-    <div className="more-menu-overlay" onClick={onClose}>
-      <div className="more-menu-sheet" onClick={(event) => event.stopPropagation()}>
-        <div className="more-menu-sheet__handle" />
-        <div className="more-menu-sheet__head">
-          <h2>Menu</h2>
-          <button type="button" className="more-menu-sheet__close" onClick={onClose} aria-label="Đóng">
-            <X size={18} />
-          </button>
-        </div>
-        <button type="button" className="more-menu-item" onClick={onOpenTbtn}>
-          <span className="round-icon more-menu-item__icon">
-            <Users size={20} />
-          </span>
-          <span>
-            <strong>TBTN</strong>
-            <small>Tổng quan thi đua theo nhóm</small>
-          </span>
-        </button>
-        <button type="button" className="more-menu-item" onClick={onClose}>
-          <span className="round-icon more-menu-item__icon">
-            <FileText size={20} />
-          </span>
-          <span>
-            <strong>Khác</strong>
-            <small>Tiện ích mở rộng</small>
-          </span>
+    <div className="more-menu-sheet more-menu-popover" onClick={(event) => event.stopPropagation()}>
+      <div className="more-menu-sheet__head">
+        <h2>Menu</h2>
+        <button type="button" className="more-menu-sheet__close" onClick={onClose} aria-label="Đóng">
+          <X size={18} />
         </button>
       </div>
+      <button type="button" className="more-menu-item" onClick={onOpenTbtn}>
+        <span className="round-icon more-menu-item__icon">
+          <Users size={20} />
+        </span>
+        <span>
+          <strong>TBTN</strong>
+          <small>Tổng quan thi đua theo nhóm</small>
+        </span>
+      </button>
+      <button type="button" className="more-menu-item" onClick={onClose}>
+        <span className="round-icon more-menu-item__icon">
+          <FileText size={20} />
+        </span>
+        <span>
+          <strong>Khác</strong>
+          <small>Tiện ích mở rộng</small>
+        </span>
+      </button>
     </div>
   )
 }
