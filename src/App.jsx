@@ -2893,12 +2893,6 @@ function MoreMenuBottomSheet({ open, onClose, onOpenTbtn }) {
 
   return (
     <div className="more-menu-sheet more-menu-popover" onClick={(event) => event.stopPropagation()}>
-      <div className="more-menu-sheet__head">
-        <h2>Menu</h2>
-        <button type="button" className="more-menu-sheet__close" onClick={onClose} aria-label="Đóng">
-          <X size={18} />
-        </button>
-      </div>
       <button type="button" className="more-menu-item" onClick={onOpenTbtn}>
         <span className="round-icon more-menu-item__icon">
           <Users size={20} />
