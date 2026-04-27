@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
-  CalendarDays,
   Check,
   ChevronLeft,
+  FileText,
   Flame,
+  Menu,
   Medal,
   Plus,
   Settings,
   Target,
+  TrendingDown,
+  TrendingUp,
   Trash2,
   Trophy,
   Upload,
+  Users,
   X,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
@@ -27,6 +31,15 @@ const SUPABASE_TABLES = {
 }
 
 const SUPABASE_BUCKET = 'autorank-assets'
+
+const SHEET_CONFIG = {
+  shared: import.meta.env.VITE_GOOGLE_SHEET_URL || import.meta.env.VITE_PUBLIC_GOOGLE_SHEET_URL || '',
+  topMonth: import.meta.env.VITE_TOP_THANG_URL || import.meta.env.VITE_TOP_MONTH_URL || '',
+  topDay: import.meta.env.VITE_TOP_NGAY_URL || import.meta.env.VITE_TOP_DAY_URL || '',
+  teams: import.meta.env.VITE_TBTN_URL || import.meta.env.VITE_TEAM_OVERVIEW_URL || '',
+}
+
+const TBTN_STORAGE_KEY = 'autorank_tbtn_rows'
 
 const ADMIN_CREDENTIALS = {
   username: 'bvntkh',
@@ -109,6 +122,7 @@ const mainTabs = [
 const adminTabs = [
   { id: 'advisors', label: 'Tư vấn viên' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
+  { id: 'tbtn', label: 'TBTN / Trưởng nhóm' },
   { id: 'banners', label: 'Banner' },
 ]
 
@@ -540,6 +554,13 @@ const normalizeRevenue = (value) => {
 const formatCompactMoney = (revenue) =>
   `${compactMoneyFormatter.format(Number(revenue || 0) / 1000000)}tr`
 
+const formatCurrency = (value) =>
+  new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    maximumFractionDigits: 0,
+  }).format(normalizeRevenue(value))
+
 const formatStatusLabel = (status) =>
   STATUS_OPTIONS.find((option) => option.value === status)?.label ?? 'Chưa xác định'
 
@@ -549,22 +570,6 @@ const parseLocalDate = (value) => {
   if (!year || !month || !day) return null
   const date = new Date(year, month - 1, day)
   return Number.isNaN(date.getTime()) ? null : date
-}
-
-const getCampaignTimeBadge = (campaign) => {
-  if (campaign.status === 'upcoming') return { label: 'Sắp bắt đầu', tone: 'upcoming' }
-  if (campaign.status === 'ended') return { label: 'Đã kết thúc', tone: 'ended' }
-
-  const endDate = parseLocalDate(campaign.endDate)
-  if (!endDate) return null
-
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-
-  const daysLeft = Math.round((endDate.getTime() - today.getTime()) / 86400000)
-  if (daysLeft > 0) return { label: `Còn ${daysLeft} ngày`, tone: 'active' }
-  if (daysLeft === 0) return { label: 'Kết thúc hôm nay', tone: 'today' }
-  return { label: 'Đã kết thúc', tone: 'ended' }
 }
 
 const sortByRevenueDesc = (rows) =>
@@ -621,6 +626,93 @@ function normalizeImportedAdvisor(raw, index = 0) {
   }
 }
 
+function normalizeImportedTeam(raw, index = 0) {
+  const name = getRawValue(raw, ['Tên nhóm', 'tenNhom', 'Nhóm', 'nhom', 'Ten nhom', 'Nhom', 'team', 'Team'])
+  const leader = getRawValue(raw, [
+    'Tên trưởng nhóm',
+    'tenTruongNhom',
+    'Trưởng nhóm',
+    'truongNhom',
+    'Truong nhom',
+    'Leader',
+    'leader',
+  ])
+  const avatar = getRawValue(raw, [
+    'avatarTruongNhom',
+    'Avatar trưởng nhóm',
+    'Avatar truong nhom',
+    'Avatar',
+    'avatar',
+  ])
+  const revenue = getRawValue(raw, [
+    'Doanh thu của nhóm',
+    'Doanh thu',
+    'doanhThu',
+    'doanhThuNhom',
+    'Revenue',
+    'AFYP',
+  ], 0)
+  const contracts = getRawValue(raw, ['Số lượng hợp đồng', 'Hợp đồng', 'soHopDong', 'So hop dong', 'Hop dong', 'contracts'], 0)
+  const activeTvv = getRawValue(raw, [
+    'Số lượng TVV hoạt động',
+    'TVV hoạt động',
+    'tvvHoatDong',
+    'soLuongTVVHoatDong',
+    'TVV hoat dong',
+    'activeTvv',
+  ], 0)
+  const yesterday = getRawValue(raw, ['doanhThuHomQua', 'Doanh thu hôm qua', 'Doanh thu hom qua'], 0)
+  const today = getRawValue(raw, ['doanhThuHomNay', 'Doanh thu hôm nay', 'Doanh thu hom nay'], 0)
+  const nextReward = getRawValue(raw, [
+    'mocThuongTiepTheo',
+    'Mốc thưởng tiếp theo',
+    'Moc thuong tiep theo',
+    'Moc thuong',
+  ], 0)
+
+  if (!String(name).trim()) return null
+  const teamName = String(name).trim()
+
+  return {
+    id: `team-${slugify(teamName) || index}`,
+    tenNhom: teamName,
+    truongNhom: String(leader || '').trim(),
+    avatarTruongNhom: String(avatar || '').trim(),
+    doanhThu: normalizeRevenue(revenue),
+    soHopDong: Number(contracts || 0) || 0,
+    tvvHoatDong: Number(activeTvv || 0) || 0,
+    doanhThuHomQua: normalizeRevenue(yesterday),
+    doanhThuHomNay: normalizeRevenue(today),
+    mocThuongTiepTheo: normalizeRevenue(nextReward),
+    sort_order: index,
+  }
+}
+
+const calculateGrowth = (team) =>
+  normalizeRevenue(team?.doanhThuHomNay) - normalizeRevenue(team?.doanhThuHomQua)
+
+const calculateRewardProgress = (team) => {
+  const target = normalizeRevenue(team?.mocThuongTiepTheo)
+  if (target <= 0) return { conThieu: 0, progress: 0, isReached: false }
+
+  const revenue = normalizeRevenue(team?.doanhThu)
+  const conThieu = target - revenue
+  return {
+    conThieu,
+    progress: Math.max(0, Math.min(100, (revenue / target) * 100)),
+    isReached: conThieu <= 0,
+  }
+}
+
+const getTeamStatus = (team) => {
+  const growth = calculateGrowth(team)
+  const reward = calculateRewardProgress(team)
+  if (reward.isReached) return { label: 'Đã đạt mốc', tone: 'reached' }
+  if (reward.progress >= 80) return { label: 'Gần đạt mốc', tone: 'near' }
+  if (growth > 0) return { label: 'Đang bứt phá', tone: 'breakout' }
+  return { label: 'Cần tăng tốc', tone: 'speedup' }
+}
+
 function parseCsv(text) {
   return text
     .trim()
@@ -646,7 +738,7 @@ function parseCsvTextToObjects(text) {
   return XLSX.utils.sheet_to_json(firstSheet, { defval: '' })
 }
 
-function convertGoogleSheetUrlToCsvUrl(url) {
+function convertGoogleSheetUrlToCsvUrl(url, sheetName = '') {
   const match = String(url).match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
   if (!match) {
     throw new Error('Link Google Sheet không hợp lệ.')
@@ -655,7 +747,42 @@ function convertGoogleSheetUrlToCsvUrl(url) {
   const spreadsheetId = match[1]
   const parsedUrl = new URL(url)
   const gid = parsedUrl.searchParams.get('gid') || '0'
+  if (sheetName) {
+    return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`
+  }
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`
+}
+
+function loadStoredTbtnRows() {
+  try {
+    const stored = window.localStorage.getItem(TBTN_STORAGE_KEY)
+    if (!stored) return []
+    const parsed = JSON.parse(stored)
+    return safeArray(parsed).map(normalizeImportedTeam).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+async function fetchSheetRows(url, sheetName = '') {
+  if (!url) return []
+  const finalUrl = url.includes('docs.google.com') ? convertGoogleSheetUrlToCsvUrl(url, sheetName) : url
+  const response = await fetch(finalUrl)
+  if (!response.ok) throw new Error(`Không lấy được dữ liệu. Mã lỗi ${response.status}.`)
+
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const json = await response.json()
+    if (Array.isArray(json)) return json
+    if (Array.isArray(json?.data)) return json.data
+    throw new Error('JSON không đúng định dạng mảng dữ liệu.')
+  }
+
+  const text = await response.text()
+  if (text.trim().startsWith('<!DOCTYPE html') || text.trim().startsWith('<html')) {
+    throw new Error('Không lấy được dữ liệu. Hãy bật quyền xem Google Sheet cho người có link.')
+  }
+  return parseCsvTextToObjects(text)
 }
 
 function usePathname() {
@@ -690,6 +817,7 @@ function App() {
     return defaults && typeof defaults === 'object' ? defaults : defaultCampaignRankings
   })
   const [banners, setBanners] = useState(() => normalizeBanners(defaultBanners))
+  const [tbtnRows, setTbtnRows] = useState(() => loadStoredTbtnRows())
 
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
@@ -784,6 +912,14 @@ function App() {
     })
   }, [advisors, campaignRankings, banners])
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TBTN_STORAGE_KEY, JSON.stringify(tbtnRows))
+    } catch (storageError) {
+      console.error(storageError)
+    }
+  }, [tbtnRows])
+
   if (pathname === '/admin') {
     return (
       <AdminView
@@ -793,9 +929,10 @@ function App() {
         banners={banners}
         isAdminLoggedIn={isAdminLoggedIn}
         setAdvisors={setAdvisors}
-        setCampaigns={setCampaigns}
         setCampaignRankings={setCampaignRankings}
         setBanners={setBanners}
+        tbtnRows={tbtnRows}
+        setTbtnRows={setTbtnRows}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchAdvisors={fetchAdvisors}
         fetchCompetitions={fetchCompetitions}
@@ -811,6 +948,7 @@ function App() {
       campaignRankings={campaignRankings}
       banners={banners}
       setBanners={setBanners}
+      tbtnRows={tbtnRows}
       navigate={navigate}
     />
   )
@@ -818,12 +956,14 @@ function App() {
 
 function MobileAppShell({ children, bottomNav = null, className = '' }) {
   return (
-    <div className="mobile-page">
-      <div className={`mobile-shell ${className}`.trim()}>
-        {children}
-        {bottomNav}
+    <>
+      <div className="mobile-page">
+        <div className={`mobile-shell ${className}`.trim()}>
+          {children}
+        </div>
       </div>
-    </div>
+      {bottomNav}
+    </>
   )
 }
 
@@ -833,15 +973,113 @@ function MainView({
   campaignRankings,
   banners,
   setBanners,
+  tbtnRows,
   navigate,
 }) {
   const [activeTab, setActiveTab] = useState('bang-vang')
+  const [activeScreen, setActiveScreen] = useState('main')
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false)
+  const [rankingPeriod, setRankingPeriod] = useState('month')
   const [leaderboardAnimationKey, setLeaderboardAnimationKey] = useState(0)
   const [competitionFilter, setCompetitionFilter] = useState('active')
   const [selectedCampaign, setSelectedCampaign] = useState(null)
   const [modalType, setModalType] = useState(null)
+  const [remoteRankings, setRemoteRankings] = useState({
+    month: { rows: [], loading: false, error: '' },
+    day: { rows: [], loading: false, error: '' },
+  })
+  const [teamOverview, setTeamOverview] = useState({
+    rows: tbtnRows,
+    loading: false,
+    error: '',
+  })
 
-  const sortedAdvisors = useMemo(() => sortByRevenueDesc(advisors).slice(0, 10), [advisors])
+  useEffect(() => {
+    setTeamOverview((current) =>
+      current.loading || current.error ? current : { ...current, rows: tbtnRows },
+    )
+  }, [tbtnRows])
+
+  const configuredSheets = useMemo(() => {
+    const local = (key) => window.localStorage.getItem(key) || ''
+    return {
+      shared: SHEET_CONFIG.shared || local('autorank_google_sheet_url'),
+      topMonth: SHEET_CONFIG.topMonth || local('autorank_top_thang_url'),
+      topDay: SHEET_CONFIG.topDay || local('autorank_top_ngay_url'),
+      teams: SHEET_CONFIG.teams || local('autorank_tbtn_url'),
+    }
+  }, [])
+
+  useEffect(() => {
+    const loadRankings = async () => {
+      const configs = [
+        ['month', configuredSheets.topMonth || configuredSheets.shared, 'TopThang'],
+        ['day', configuredSheets.topDay || configuredSheets.shared, 'TopNgay'],
+      ]
+
+      configs.forEach(async ([period, url, sheetName]) => {
+        if (!url) return
+        setRemoteRankings((current) => ({
+          ...current,
+          [period]: { ...current[period], loading: true, error: '' },
+        }))
+        try {
+          const rows = await fetchSheetRows(url, sheetName)
+          const normalized = sortByRevenueDesc(rows.map(normalizeImportedAdvisor).filter(Boolean)).slice(0, 10)
+          setRemoteRankings((current) => ({
+            ...current,
+            [period]: { rows: normalized, loading: false, error: '' },
+          }))
+        } catch (error) {
+          setRemoteRankings((current) => ({
+            ...current,
+            [period]: { rows: [], loading: false, error: error?.message ?? 'Không lấy được dữ liệu.' },
+          }))
+        }
+      })
+    }
+
+    loadRankings()
+  }, [configuredSheets])
+
+  useEffect(() => {
+    const url = configuredSheets.teams || configuredSheets.shared
+    if (!url) {
+      setTeamOverview((current) => ({ ...current, rows: tbtnRows, loading: false, error: '' }))
+      return
+    }
+
+    let isMounted = true
+    const loadTeams = async () => {
+      setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
+      try {
+        const rows = await fetchSheetRows(url, 'TBTN')
+        if (!isMounted) return
+        setTeamOverview({
+          rows: rows.map(normalizeImportedTeam).filter(Boolean),
+          loading: false,
+          error: '',
+        })
+      } catch (error) {
+        if (!isMounted) return
+        setTeamOverview({ rows: [], loading: false, error: error?.message ?? 'Không lấy được dữ liệu.' })
+      }
+    }
+
+    loadTeams()
+    return () => {
+      isMounted = false
+    }
+  }, [configuredSheets, tbtnRows])
+
+  const topMonthRows = remoteRankings.month.rows.length ? remoteRankings.month.rows : advisors
+  const topDayRows = remoteRankings.day.rows
+  const activeLeaderboardRows = rankingPeriod === 'day' ? topDayRows : topMonthRows
+  const activeRankingState = remoteRankings[rankingPeriod]
+  const sortedAdvisors = useMemo(
+    () => sortByRevenueDesc(activeLeaderboardRows).slice(0, 10),
+    [activeLeaderboardRows],
+  )
   const podium = [sortedAdvisors[1], sortedAdvisors[0], sortedAdvisors[2]].filter(Boolean)
   const rankingRows = sortedAdvisors.slice(3)
   const filteredCampaigns = campaigns.filter((campaign) => campaign.status === competitionFilter)
@@ -880,6 +1118,7 @@ function MainView({
             type="button"
             className={`bottom-tab ${isActive ? 'is-active' : ''}`}
             onClick={() => {
+              setActiveScreen('main')
               setActiveTab(tab.id)
               if (tab.id === 'bang-vang') {
                 setLeaderboardAnimationKey((current) => current + 1)
@@ -893,26 +1132,52 @@ function MainView({
           </button>
         )
       })}
+      <button
+        type="button"
+        className={`bottom-tab ${isMoreMenuOpen ? 'is-active' : ''}`}
+        onClick={() => setIsMoreMenuOpen(true)}
+      >
+        <span className="round-icon bottom-tab__icon">
+          <Menu size={20} />
+        </span>
+        <span className="bottom-tab__label">Menu</span>
+      </button>
     </nav>
   )
 
   return (
     <MobileAppShell className="main-shell" bottomNav={bottomNav}>
       <main className="mobile-content mobile-scroll">
-          {activeTab === 'bang-vang' && (
+          {activeScreen === 'tbtn' && (
+            <TeamOverviewPage
+              teams={teamOverview.rows}
+              isLoading={teamOverview.loading}
+              error={teamOverview.error}
+              onBack={() => setActiveScreen('main')}
+            />
+          )}
+          {activeScreen === 'main' && activeTab === 'bang-vang' && (
             <BangVangTab
               key={`bang-vang-${leaderboardAnimationKey}`}
               podium={podium}
               rankingRows={rankingRows}
               advisorCount={sortedAdvisors.length}
+              rankingPeriod={rankingPeriod}
+              onRankingPeriodChange={(period) => {
+                setRankingPeriod(period)
+                setLeaderboardAnimationKey((current) => current + 1)
+              }}
+              isLoading={activeRankingState.loading}
+              error={activeRankingState.error}
               bannerImage={getBannerImage(banners, 'bang-vang')}
               onBannerUpload={(file) => updatePageBanner('bang-vang', file)}
               onAdminAccess={() => navigate('/admin')}
             />
           )}
-          {activeTab === 'thi-dua' && (
+          {activeScreen === 'main' && activeTab === 'thi-dua' && (
             <ThiDuaTab
               campaigns={filteredCampaigns}
+              campaignRankings={campaignRankings}
               counts={counts}
               currentFilter={competitionFilter}
               onFilterChange={setCompetitionFilter}
@@ -924,12 +1189,25 @@ function MainView({
                 setSelectedCampaign(campaign)
                 setModalType('ranking')
               }}
+              onOpenPoster={(campaign) => {
+                setSelectedCampaign(campaign)
+                setModalType('poster')
+              }}
               bannerImage={getBannerImage(banners, 'thi-dua')}
               onBannerUpload={(file) => updatePageBanner('thi-dua', file)}
               onAdminAccess={() => navigate('/admin')}
             />
           )}
       </main>
+
+        <MoreMenuBottomSheet
+          open={isMoreMenuOpen}
+          onClose={() => setIsMoreMenuOpen(false)}
+          onOpenTbtn={() => {
+            setIsMoreMenuOpen(false)
+            setActiveScreen('tbtn')
+          }}
+        />
 
         {selectedCampaign && modalType === 'detail' && (
           <DetailModal campaign={selectedCampaign} onClose={closeModal} />
@@ -941,6 +1219,9 @@ function MainView({
             onClose={closeModal}
           />
         )}
+        {selectedCampaign && modalType === 'poster' && (
+          <PosterModal campaign={selectedCampaign} onClose={closeModal} />
+        )}
     </MobileAppShell>
   )
 }
@@ -949,6 +1230,10 @@ function BangVangTab({
   podium,
   rankingRows,
   advisorCount,
+  rankingPeriod,
+  onRankingPeriodChange,
+  isLoading,
+  error,
   bannerImage,
   onBannerUpload,
   onAdminAccess,
@@ -965,11 +1250,17 @@ function BangVangTab({
       />
 
       <div className="screen-body">
-        {!hasAdvisors ? (
+        <RankingPeriodToggle value={rankingPeriod} onChange={onRankingPeriodChange} />
+
+        {isLoading ? (
+          <div className="empty-state">Đang tải dữ liệu xếp hạng...</div>
+        ) : error ? (
+          <div className="empty-state">Không lấy được dữ liệu: {error}</div>
+        ) : !hasAdvisors ? (
           <div className="empty-state">Chưa có dữ liệu tư vấn viên</div>
         ) : (
           <>
-            <div className="podium-grid">
+            <div className="podium-section podium-grid">
               <PodiumCard advisor={podium[0]} rank={2} delay={80} />
               <PodiumCard advisor={podium[1]} rank={1} delay={0} />
               <PodiumCard advisor={podium[2]} rank={3} delay={160} />
@@ -1008,11 +1299,13 @@ function LeaderboardUploadBanner({ image, canEdit, onUpload, onAdminAccess }) {
 }
 function ThiDuaTab({
   campaigns,
+  campaignRankings,
   counts,
   currentFilter,
   onFilterChange,
   onOpenDetail,
   onOpenRanking,
+  onOpenPoster,
   bannerImage,
   onBannerUpload,
   onAdminAccess,
@@ -1057,6 +1350,8 @@ function ThiDuaTab({
                 campaign={campaign}
                 onOpenDetail={() => onOpenDetail(campaign)}
                 onOpenRanking={() => onOpenRanking(campaign)}
+                onOpenPoster={() => onOpenPoster(campaign)}
+                rankingCount={safeArray(campaignRankings[campaign.id]).length}
               />
             ))
           ) : (
@@ -1110,6 +1405,133 @@ function HiddenAdminEntry({ onAdminAccess }) {
   )
 }
 
+function TeamOverviewPage({ teams, isLoading, error, onBack }) {
+  const totalRevenue = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
+  const totalToday = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThuHomNay), 0)
+  const totalYesterday = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThuHomQua), 0)
+  const totalGrowth = totalToday - totalYesterday
+  const growthTone = totalGrowth >= 0 ? 'up' : 'down'
+
+  return (
+    <section className="screen tbtn-screen">
+      <div className="tbtn-header">
+        <button type="button" className="back-link tbtn-back" onClick={onBack}>
+          <span className="round-icon button-icon">
+            <ChevronLeft size={18} />
+          </span>
+          Quay lại
+        </button>
+        <div>
+          <h1>TBTN - Tổng quan nhóm</h1>
+          <span>Hôm nay</span>
+        </div>
+      </div>
+
+      <div className="screen-body tbtn-body">
+        <div className="tbtn-summary-card">
+          <span>Tổng doanh thu hệ thống</span>
+          <strong>{formatCurrency(totalRevenue)}</strong>
+          <div className={`tbtn-summary-card__growth is-${growthTone}`}>
+            {growthTone === 'up' ? <TrendingUp size={17} /> : <TrendingDown size={17} />}
+            {totalGrowth >= 0 ? '+' : ''}
+            {formatCurrency(totalGrowth)} so với hôm qua
+          </div>
+        </div>
+
+        {isLoading ? <div className="empty-state">Đang tải tổng quan nhóm...</div> : null}
+        {!isLoading && error ? <div className="empty-state">Không lấy được dữ liệu TBTN: {error}</div> : null}
+        {!isLoading && !error && !teams.length ? (
+          <div className="empty-state">Chưa có dữ liệu TBTN từ Google Sheet.</div>
+        ) : null}
+
+        {!isLoading && !error && teams.length ? (
+          <div className="team-grid">
+            {teams.map((team) => (
+              <TeamCard key={team.id} team={team} />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function TeamAvatar({ team }) {
+  const initials = getInitials(team.truongNhom || team.tenNhom)
+  return (
+    <div className="avatar-circle team-avatar">
+      {team.avatarTruongNhom ? (
+        <img src={team.avatarTruongNhom} alt={team.truongNhom || team.tenNhom} className="avatar-circle__image" />
+      ) : (
+        <span>{initials}</span>
+      )}
+    </div>
+  )
+}
+
+function RewardProgressBar({ progress }) {
+  return (
+    <div className="reward-progress" aria-label={`Tiến độ ${Math.round(progress)}%`}>
+      <div style={{ width: `${Math.round(progress)}%` }} />
+    </div>
+  )
+}
+
+function TeamCard({ team }) {
+  const growth = calculateGrowth(team)
+  const reward = calculateRewardProgress(team)
+  const status = getTeamStatus(team)
+
+  return (
+    <article className="team-card">
+      <div className="team-card__top">
+        <TeamAvatar team={team} />
+        <div>
+          <h2>{team.tenNhom}</h2>
+          <span>{team.truongNhom || 'Chưa có trưởng nhóm'}</span>
+        </div>
+        <span className={`team-status team-status--${status.tone}`}>{status.label}</span>
+      </div>
+
+      <div className="team-card__revenue">
+        <span>Doanh thu</span>
+        <strong>{formatCurrency(team.doanhThu)}</strong>
+      </div>
+
+      <div className="team-metrics">
+        <div>
+          <span>HĐ</span>
+          <strong>{team.soHopDong || 0}</strong>
+        </div>
+        <div>
+          <span>TVV hoạt động</span>
+          <strong>{team.tvvHoatDong || 0}</strong>
+        </div>
+        <div>
+          <span>Tăng trưởng</span>
+          <strong className={growth >= 0 ? 'is-positive' : 'is-negative'}>
+            {growth >= 0 ? '+' : ''}
+            {formatCompactMoney(growth)}
+          </strong>
+        </div>
+      </div>
+
+      <div className="team-reward">
+        <div>
+          <span>Mốc thưởng tiếp theo</span>
+          <strong>{formatCurrency(team.mocThuongTiepTheo)}</strong>
+        </div>
+        <div>
+          <span>{reward.isReached ? 'Đã đạt mốc' : 'Còn thiếu'}</span>
+          <strong>{reward.isReached ? 'Đã đạt mốc' : formatCurrency(Math.max(0, reward.conThieu))}</strong>
+        </div>
+      </div>
+
+      <RewardProgressBar progress={reward.progress} />
+    </article>
+  )
+}
+
 function PageBanner({
   pageId,
   image = '',
@@ -1145,12 +1567,12 @@ function AvatarCircle({ advisor, size = 'md' }) {
 }
 
 function PodiumCard({ advisor, rank, delay = 0 }) {
-  if (!advisor) return <div />
+  if (!advisor) return <div className="podium-card podium-card--empty" />
   const tierLabel = rank === 1 ? 'Vàng' : rank === 2 ? 'Bạc' : 'Đồng'
 
   return (
     <div
-      className={`podium-card podium-animated ${rank === 1 ? 'is-first' : ''}`}
+      className={`podium-card podium-card--rank-${rank} podium-animated ${rank === 1 ? 'is-first' : ''}`}
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className={`podium-avatar podium-avatar--${rank}`}>
@@ -1210,35 +1632,20 @@ function CampaignVisual({ campaign, compact = false }) {
   )
 }
 
-function CampaignCard({ campaign, onOpenDetail, onOpenRanking }) {
-  const timeBadge = getCampaignTimeBadge(campaign)
-
+function CampaignCard({ campaign, onOpenDetail, onOpenRanking, onOpenPoster }) {
   return (
     <article className="campaign-card">
-      <CampaignVisual campaign={campaign} />
+      <button type="button" className="campaign-poster-button" onClick={onOpenPoster}>
+        <CampaignVisual campaign={campaign} />
+      </button>
       <div className="campaign-card__body">
         <h3>{campaign.title}</h3>
-        <p>{campaign.details}</p>
-        <div className="campaign-meta">
-          <CalendarDays size={16} />
-          <span>
-            {campaign.startDate} - {campaign.endDate}
-          </span>
-        </div>
-        {timeBadge ? (
-          <div className="campaign-badges">
-            <span className={`campaign-time-badge campaign-time-badge--${timeBadge.tone}`}>
-              <CalendarDays size={12} strokeWidth={2} />
-              {timeBadge.label}
-            </span>
-          </div>
-        ) : null}
         <div className="campaign-actions">
           <button type="button" className="button-light" onClick={onOpenDetail}>
             Chi tiết
           </button>
           <button type="button" className="button-primary" onClick={onOpenRanking}>
-            BXH
+            Bảng xếp hạng
           </button>
         </div>
       </div>
@@ -1287,7 +1694,44 @@ function RankingModal({ campaign, rankings, onClose }) {
   )
 }
 
+function PosterModal({ campaign, onClose }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
+  const image = campaign.image || campaign.poster
+
+  return (
+    <div className="poster-modal-overlay" onClick={onClose}>
+      <div className="poster-modal-panel" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="poster-modal-close" onClick={onClose} aria-label="Đóng">
+          <X size={20} />
+        </button>
+        {image ? (
+          <img src={image} alt={campaign.title} className="poster-modal-image" />
+        ) : (
+          <div className="poster-modal-fallback">
+            <CampaignVisual campaign={campaign} compact />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ModalShell({ title, children, onClose }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [])
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
@@ -1308,11 +1752,12 @@ function AdminView({
   campaigns,
   campaignRankings,
   banners,
+  tbtnRows,
   isAdminLoggedIn,
   setAdvisors,
-  setCampaigns,
   setCampaignRankings,
   setBanners,
+  setTbtnRows,
   setIsAdminLoggedIn,
   fetchAdvisors,
   fetchCompetitions,
@@ -1329,6 +1774,13 @@ function AdminView({
   const [advisorRemoteUrl, setAdvisorRemoteUrl] = useState('')
   const [advisorImportError, setAdvisorImportError] = useState('')
   const [advisorImportMessage, setAdvisorImportMessage] = useState('')
+  const [tbtnImportState, setTbtnImportState] = useState({
+    remoteUrl: '',
+    preview: [],
+    source: '',
+    error: '',
+    message: '',
+  })
   const [campaignImportState, setCampaignImportState] = useState({})
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false)
   const [campaignDraft, setCampaignDraft] = useState(() => createCampaignDraft())
@@ -1655,6 +2107,41 @@ function AdminView({
       window.alert(`Không thể lưu danh sách TVV lên Supabase: ${previewError?.message ?? previewError}`)
       setAdvisorImportError(previewError?.message ?? 'Không thể lưu danh sách TVV lên Supabase.')
     }
+  }
+
+  const handleTbtnRemoteImport = async () => {
+    try {
+      const rows = tbtnImportState.remoteUrl.includes('docs.google.com')
+        ? await fetchGoogleSheetCsvRows(tbtnImportState.remoteUrl)
+        : await parseRemoteDataset(tbtnImportState.remoteUrl)
+      const normalized = rows.map(normalizeImportedTeam).filter(Boolean)
+      setTbtnImportState((current) => ({
+        ...current,
+        preview: normalized,
+        source: `Google Sheet/API: ${current.remoteUrl}`,
+        error: '',
+        message: '',
+      }))
+    } catch (remoteError) {
+      setTbtnImportState((current) => ({
+        ...current,
+        error: remoteError?.message ?? 'Không lấy được dữ liệu TBTN.',
+        message: '',
+      }))
+    }
+  }
+
+  const applyTbtnPreview = () => {
+    if (!tbtnImportState.preview.length) return
+    setTbtnRows(tbtnImportState.preview)
+    setTbtnImportState((current) => ({
+      ...current,
+      preview: [],
+      source: '',
+      error: '',
+      message: 'Đã lưu dữ liệu TBTN vào trình duyệt.',
+    }))
+    showAdminToast('Đã cập nhật dữ liệu TBTN')
   }
 
   const getCampaignImport = (campaignId) =>
@@ -2260,6 +2747,75 @@ function AdminView({
               </section>
             )}
 
+            {activeAdminTab === 'tbtn' && (
+              <section className="admin-section">
+                <div className="admin-section__head">
+                  <div>
+                    <h2>TBTN / Trưởng nhóm</h2>
+                    <p>Nhập API Google Sheet, JSON hoặc CSV để cập nhật tổng quan nhóm.</p>
+                  </div>
+                </div>
+
+                <ImportTools
+                  remoteUrl={tbtnImportState.remoteUrl}
+                  setRemoteUrl={(value) =>
+                    setTbtnImportState((current) => ({ ...current, remoteUrl: value }))
+                  }
+                  onFileImport={async (file) => {
+                    try {
+                      const rows = await parseExcelFile(file)
+                      setTbtnImportState((current) => ({
+                        ...current,
+                        preview: rows.map(normalizeImportedTeam).filter(Boolean),
+                        source: `Excel: ${file.name}`,
+                        error: '',
+                        message: '',
+                      }))
+                    } catch {
+                      setTbtnImportState((current) => ({
+                        ...current,
+                        error: 'Không đọc được file TBTN. Vui lòng kiểm tra lại.',
+                        message: '',
+                      }))
+                    }
+                  }}
+                  onRemoteImport={handleTbtnRemoteImport}
+                  error={tbtnImportState.error}
+                  message={tbtnImportState.message}
+                />
+
+                <TeamPreviewPanel
+                  title="Preview TBTN / Trưởng nhóm"
+                  source={tbtnImportState.source}
+                  rows={tbtnImportState.preview}
+                  onApply={applyTbtnPreview}
+                  onClear={() =>
+                    setTbtnImportState((current) => ({
+                      ...current,
+                      preview: [],
+                      source: '',
+                      error: '',
+                    }))
+                  }
+                />
+
+                <div className="admin-section__head admin-section__head--compact">
+                  <div>
+                    <h2>Dữ liệu đang dùng</h2>
+                    <p>{tbtnRows.length} nhóm đã lưu trong trình duyệt.</p>
+                  </div>
+                </div>
+
+                <div className="admin-list">
+                  {tbtnRows.length ? (
+                    tbtnRows.map((team) => <TeamAdminRow key={team.id} team={team} />)
+                  ) : (
+                    <div className="empty-state">Chưa có dữ liệu TBTN.</div>
+                  )}
+                </div>
+              </section>
+            )}
+
             {activeAdminTab === 'banners' && (
               <BannerManager
                 banners={banners}
@@ -2294,6 +2850,106 @@ function AdminView({
         />
       )}
     </MobileAppShell>
+  )
+}
+
+function RankingPeriodToggle({ value, onChange }) {
+  return (
+    <div className="ranking-period-toggle" role="group" aria-label="Chọn kỳ xếp hạng">
+      <button
+        type="button"
+        className={value === 'month' ? 'is-active' : ''}
+        onClick={() => onChange('month')}
+      >
+        Top tháng
+      </button>
+      <button
+        type="button"
+        className={value === 'day' ? 'is-active' : ''}
+        onClick={() => onChange('day')}
+      >
+        Top ngày
+      </button>
+    </div>
+  )
+}
+
+function MoreMenuBottomSheet({ open, onClose, onOpenTbtn }) {
+  if (!open) return null
+
+  return (
+    <div className="more-menu-overlay" onClick={onClose}>
+      <div className="more-menu-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="more-menu-sheet__handle" />
+        <div className="more-menu-sheet__head">
+          <h2>Menu</h2>
+          <button type="button" className="more-menu-sheet__close" onClick={onClose} aria-label="Đóng">
+            <X size={18} />
+          </button>
+        </div>
+        <button type="button" className="more-menu-item" onClick={onOpenTbtn}>
+          <span className="round-icon more-menu-item__icon">
+            <Users size={20} />
+          </span>
+          <span>
+            <strong>TBTN</strong>
+            <small>Tổng quan thi đua theo nhóm</small>
+          </span>
+        </button>
+        <button type="button" className="more-menu-item" onClick={onClose}>
+          <span className="round-icon more-menu-item__icon">
+            <FileText size={20} />
+          </span>
+          <span>
+            <strong>Khác</strong>
+            <small>Tiện ích mở rộng</small>
+          </span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function TeamPreviewPanel({ title, source, rows, onApply, onClear }) {
+  if (!rows.length) return null
+
+  return (
+    <div className="preview-panel">
+      <div className="preview-panel__head">
+        <div>
+          <h3>{title}</h3>
+          <p>{source}</p>
+        </div>
+        <div className="preview-panel__actions">
+          <button type="button" className="button-light" onClick={onClear}>
+            Xóa preview
+          </button>
+          <button type="button" className="button-primary" onClick={onApply}>
+            Lưu dữ liệu TBTN
+          </button>
+        </div>
+      </div>
+
+      <div className="preview-list">
+        {rows.map((team) => (
+          <TeamAdminRow key={team.id} team={team} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TeamAdminRow({ team }) {
+  return (
+    <div className="preview-row team-preview-row">
+      <TeamAvatar team={team} />
+      <div className="preview-row__content">
+        <strong>{team.tenNhom}</strong>
+        <span>
+          {team.truongNhom || 'Chưa có trưởng nhóm'} - {formatCompactMoney(team.doanhThu)} - {team.tvvHoatDong || 0} TVV
+        </span>
+      </div>
+    </div>
   )
 }
 
