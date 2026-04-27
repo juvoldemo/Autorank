@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
+import Papa from 'papaparse'
 import {
   Check,
   ChevronLeft,
@@ -40,6 +41,7 @@ const SHEET_CONFIG = {
 }
 
 const TBTN_STORAGE_KEY = 'autorank_tbtn_rows'
+const TBTN_URL_STORAGE_KEY = 'autorank_tbtn_url'
 
 const ADMIN_CREDENTIALS = {
   username: 'bvntkh',
@@ -551,6 +553,8 @@ const normalizeRevenue = (value) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+const parseMoney = (value) => normalizeRevenue(value)
+
 const formatCompactMoney = (revenue) =>
   `${compactMoneyFormatter.format(Number(revenue || 0) / 1000000)}tr`
 
@@ -560,6 +564,15 @@ const formatCurrency = (value) =>
     currency: 'VND',
     maximumFractionDigits: 0,
   }).format(normalizeRevenue(value))
+
+const formatTbtnMoney = (value) =>
+  `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')} đ`
+
+const normalizeInteger = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  const parsed = Number(String(value ?? '').replace(/[^\d.-]/g, ''))
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0
+}
 
 const formatStatusLabel = (status) =>
   STATUS_OPTIONS.find((option) => option.value === status)?.label ?? 'Chưa xác định'
@@ -627,7 +640,8 @@ function normalizeImportedAdvisor(raw, index = 0) {
 }
 
 function normalizeImportedTeam(raw, index = 0) {
-  const name = getRawValue(raw, ['Tên nhóm', 'tenNhom', 'Nhóm', 'nhom', 'Ten nhom', 'Nhom', 'team', 'Team'])
+  const stt = getRawValue(raw, ['STT', 'stt', 'No', 'So thu tu'], index + 1)
+  const name = getRawValue(raw, ['Tên nhóm', 'Ten nhom', 'tenNhom', 'Nhóm', 'nhom', 'Nhom', 'team', 'Team'])
   const leader = getRawValue(raw, [
     'Tên trưởng nhóm',
     'tenTruongNhom',
@@ -645,6 +659,8 @@ function normalizeImportedTeam(raw, index = 0) {
     'avatar',
   ])
   const revenue = getRawValue(raw, [
+    'Tổng AFYP',
+    'Tong AFYP',
     'Doanh thu của nhóm',
     'Doanh thu',
     'doanhThu',
@@ -654,6 +670,8 @@ function normalizeImportedTeam(raw, index = 0) {
   ], 0)
   const contracts = getRawValue(raw, ['Số lượng hợp đồng', 'Hợp đồng', 'soHopDong', 'So hop dong', 'Hop dong', 'contracts'], 0)
   const activeTvv = getRawValue(raw, [
+    'Số lượng TVV có hợp đồng',
+    'So luong TVV co hop dong',
     'Số lượng TVV hoạt động',
     'TVV hoạt động',
     'tvvHoatDong',
@@ -672,20 +690,35 @@ function normalizeImportedTeam(raw, index = 0) {
 
   if (!String(name).trim()) return null
   const teamName = String(name).trim()
+  const normalizedName = slugify(teamName)
 
   return {
     id: `team-${slugify(teamName) || index}`,
+    stt: normalizeInteger(stt) || index + 1,
     tenNhom: teamName,
     truongNhom: String(leader || '').trim(),
     avatarTruongNhom: String(avatar || '').trim(),
-    doanhThu: normalizeRevenue(revenue),
+    doanhThu: parseMoney(revenue),
     soHopDong: Number(contracts || 0) || 0,
-    tvvHoatDong: Number(activeTvv || 0) || 0,
+    tvvHoatDong: normalizeInteger(activeTvv),
     doanhThuHomQua: normalizeRevenue(yesterday),
     doanhThuHomNay: normalizeRevenue(today),
     mocThuongTiepTheo: normalizeRevenue(nextReward),
+    isSpecial: normalizedName.includes('le-thi-my-chau') || normalizedName.includes('khong-thuoc-nhom-ban'),
+    isCompanyTotal: normalizedName === 'tong-toan-bo' || normalizedName.includes('tong-toan-bo'),
     sort_order: index,
   }
+}
+
+function buildTbtnDataset(rows = []) {
+  const normalized = safeArray(rows).map(normalizeImportedTeam).filter(Boolean)
+  const totalRow = normalized.find((team) => team.isCompanyTotal) || null
+  const specialRow = normalized.find((team) => team.isSpecial && !team.isCompanyTotal) || null
+  const groups = normalized
+    .filter((team) => !team.isCompanyTotal && !team.isSpecial)
+    .sort((a, b) => (a.stt || a.sort_order) - (b.stt || b.sort_order))
+
+  return { groups, specialRow, totalRow }
 }
 
 const calculateGrowth = (team) =>
@@ -746,11 +779,123 @@ function convertGoogleSheetUrlToCsvUrl(url, sheetName = '') {
 
   const spreadsheetId = match[1]
   const parsedUrl = new URL(url)
-  const gid = parsedUrl.searchParams.get('gid') || '0'
+  const hashGid = String(parsedUrl.hash || '').match(/gid=(\d+)/)?.[1]
+  const gid = parsedUrl.searchParams.get('gid') || hashGid || '0'
   if (sheetName) {
     return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`
   }
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`
+}
+
+const normalizeSheetHeader = (value) =>
+  String(value ?? '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\uFEFF/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\u0111/g, 'd')
+    .replace(/\u0110/g, 'd')
+    .toLowerCase()
+
+const TBTN_HEADER_ALIASES = {
+  stt: ['stt', 'so thu tu'],
+  name: ['ten nhom', 'nhom', 'doi', 'ten doi', 'ten ban'],
+  revenue: ['tong afyp', 'afyp', 'tong doanh thu', 'doanh thu'],
+  tvv: ['so luong tvv co hop dong', 'sl tvv', 'tvv co hop dong', 'so tvv'],
+}
+
+const headerMatches = (header, aliases) =>
+  aliases.some((alias) => header === alias || header.includes(alias) || alias.includes(header))
+
+function createTbtnHeaderMap(headers) {
+  const normalized = headers.map((header) => ({
+    raw: header,
+    normalized: normalizeSheetHeader(header),
+  }))
+  const findHeader = (aliases) => normalized.find((header) => headerMatches(header.normalized, aliases))?.raw || ''
+  const headerMap = {
+    stt: findHeader(TBTN_HEADER_ALIASES.stt),
+    name: findHeader(TBTN_HEADER_ALIASES.name),
+    revenue: findHeader(TBTN_HEADER_ALIASES.revenue),
+    tvv: findHeader(TBTN_HEADER_ALIASES.tvv),
+  }
+  const missing = []
+  if (!headerMap.stt) missing.push('STT')
+  if (!headerMap.name) missing.push('Tên nhóm')
+  if (!headerMap.revenue) missing.push('Tổng AFYP')
+  if (!headerMap.tvv) missing.push('Số lượng TVV có hợp đồng')
+  if (missing.length) {
+    const foundHeaders = headers.map((header) => `"${String(header).replace(/^\uFEFF/, '').trim()}"`).join(', ')
+    throw new Error(`Không tìm thấy header TBTN: ${missing.join(', ')}. Header đọc được: ${foundHeaders || '(trống)'}. Hãy copy link đúng tab sheet đang chứa dữ liệu TBTN.`)
+  }
+  return headerMap
+}
+
+function parseTbtnCsvText(csvText) {
+  const parsed = Papa.parse(String(csvText || '').replace(/^\uFEFF/, ''), {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header) => String(header ?? '').replace(/^\uFEFF/, '').trim(),
+  })
+  if (parsed.errors?.length) console.log('[TBTN] PapaParse errors', parsed.errors)
+  const rawRows = safeArray(parsed.data).filter((row) =>
+    Object.values(row || {}).some((value) => String(value ?? '').trim() !== ''),
+  )
+  const headers = parsed.meta?.fields?.length ? parsed.meta.fields : Object.keys(rawRows[0] || {})
+  const headerMap = createTbtnHeaderMap(headers)
+  return rawRows.map((row, index) => ({
+    STT: row[headerMap.stt] ?? index + 1,
+    'Ten nhom': row[headerMap.name] ?? '',
+    'Tong AFYP': row[headerMap.revenue] ?? 0,
+    'So luong TVV co hop dong': row[headerMap.tvv] ?? 0,
+  }))
+}
+async function fetchTbtnRowsFromUrl(url) {
+  if (!url?.trim()) throw new Error('Chưa có link Google Sheet TBTN.')
+
+  const googleSheetUrl = url.trim()
+  const convertedCsvUrl = googleSheetUrl.includes('docs.google.com')
+    ? convertGoogleSheetUrlToCsvUrl(googleSheetUrl)
+    : googleSheetUrl
+
+  console.log('[TBTN] googleSheetUrl', googleSheetUrl)
+  console.log('[TBTN] convertedCsvUrl', convertedCsvUrl)
+
+  const response = await fetch(convertedCsvUrl)
+  if (!response.ok) {
+    throw new Error(`Không fetch được Google Sheet TBTN. Mã lỗi ${response.status}. Kiểm tra quyền xem công khai.`)
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  const text = await response.text()
+  if (
+    contentType.includes('text/html') ||
+    text.trim().startsWith('<!DOCTYPE html') ||
+    text.trim().startsWith('<html')
+  ) {
+    throw new Error('Sheet chưa bật quyền xem công khai hoặc link không trỏ tới dữ liệu CSV.')
+  }
+
+  let rows = []
+  try {
+    rows = parseTbtnCsvText(text)
+  } catch (parseError) {
+    console.error('[TBTN] CSV parse error', parseError)
+    throw parseError instanceof Error ? parseError : new Error('Không parse được CSV TBTN.')
+  }
+
+  console.log('[TBTN] csv row count', rows.length)
+  console.log('[TBTN] headers found', Object.keys(rows[0] || {}))
+
+  const normalized = rows.map(normalizeImportedTeam).filter(Boolean)
+  const dataset = buildTbtnDataset(normalized)
+  console.log('[TBTN] parsed group count', dataset.groups.length)
+  console.log('[TBTN] company total revenue', dataset.totalRow?.doanhThu ?? 0)
+
+  if (!normalized.length) throw new Error('CSV TBTN không có dòng dữ liệu hợp lệ.')
+  return normalized
 }
 
 function loadStoredTbtnRows() {
@@ -818,6 +963,9 @@ function App() {
   })
   const [banners, setBanners] = useState(() => normalizeBanners(defaultBanners))
   const [tbtnRows, setTbtnRows] = useState(() => loadStoredTbtnRows())
+  const [tbtnSheetUrl, setTbtnSheetUrl] = useState(
+    () => SHEET_CONFIG.teams || window.localStorage.getItem(TBTN_URL_STORAGE_KEY) || '',
+  )
 
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
@@ -933,6 +1081,8 @@ function App() {
         setBanners={setBanners}
         tbtnRows={tbtnRows}
         setTbtnRows={setTbtnRows}
+        tbtnSheetUrl={tbtnSheetUrl}
+        setTbtnSheetUrl={setTbtnSheetUrl}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchAdvisors={fetchAdvisors}
         fetchCompetitions={fetchCompetitions}
@@ -949,6 +1099,7 @@ function App() {
       banners={banners}
       setBanners={setBanners}
       tbtnRows={tbtnRows}
+      tbtnSheetUrl={tbtnSheetUrl}
       navigate={navigate}
     />
   )
@@ -974,6 +1125,7 @@ function MainView({
   banners,
   setBanners,
   tbtnRows,
+  tbtnSheetUrl,
   navigate,
 }) {
   const [activeTab, setActiveTab] = useState('bang-vang')
@@ -996,9 +1148,11 @@ function MainView({
   })
 
   useEffect(() => {
-    setTeamOverview((current) =>
-      current.loading || current.error ? current : { ...current, rows: tbtnRows },
-    )
+    const hasStoredGroups = buildTbtnDataset(tbtnRows).groups.length > 0
+    setTeamOverview((current) => {
+      if (hasStoredGroups) return { ...current, rows: tbtnRows, error: '' }
+      return current.loading || current.error ? current : { ...current, rows: tbtnRows }
+    })
   }, [tbtnRows])
 
   const configuredSheets = useMemo(() => {
@@ -1007,9 +1161,9 @@ function MainView({
       shared: SHEET_CONFIG.shared || local('autorank_google_sheet_url'),
       topMonth: SHEET_CONFIG.topMonth || local('autorank_top_thang_url'),
       topDay: SHEET_CONFIG.topDay || local('autorank_top_ngay_url'),
-      teams: SHEET_CONFIG.teams || local('autorank_tbtn_url'),
+      teams: tbtnSheetUrl || local(TBTN_URL_STORAGE_KEY),
     }
-  }, [])
+  }, [tbtnSheetUrl])
 
   useEffect(() => {
     const loadRankings = async () => {
@@ -1054,16 +1208,23 @@ function MainView({
     const loadTeams = async () => {
       setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
       try {
-        const rows = await fetchSheetRows(url, 'TBTN')
+        const rows = configuredSheets.teams
+          ? await fetchTbtnRowsFromUrl(url)
+          : (await fetchSheetRows(url, 'TBTN')).map(normalizeImportedTeam).filter(Boolean)
         if (!isMounted) return
         setTeamOverview({
-          rows: rows.map(normalizeImportedTeam).filter(Boolean),
+          rows,
           loading: false,
           error: '',
         })
       } catch (error) {
         if (!isMounted) return
-        setTeamOverview({ rows: [], loading: false, error: error?.message ?? 'Không lấy được dữ liệu.' })
+        const hasStoredGroups = buildTbtnDataset(tbtnRows).groups.length > 0
+        setTeamOverview({
+          rows: tbtnRows,
+          loading: false,
+          error: hasStoredGroups ? '' : error?.message ?? 'Không lấy được dữ liệu.',
+        })
       }
     }
 
@@ -1420,14 +1581,16 @@ function HiddenAdminEntry({ onAdminAccess }) {
 }
 
 function TeamOverviewPage({ teams, isLoading, error, onBack }) {
-  const totalRevenue = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
-  const totalToday = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThuHomNay), 0)
-  const totalYesterday = teams.reduce((sum, team) => sum + normalizeRevenue(team.doanhThuHomQua), 0)
-  const totalGrowth = totalToday - totalYesterday
-  const growthTone = totalGrowth >= 0 ? 'up' : 'down'
+  const { groups, specialRow, totalRow } = buildTbtnDataset(teams)
+  const totalCompanyRevenue = totalRow?.doanhThu ?? groups.reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
+  const totalActiveAdvisors = groups.reduce((sum, team) => sum + normalizeInteger(team.tvvHoatDong), 0)
+  const maxRevenue = Math.max(...groups.map((team) => normalizeRevenue(team.doanhThu)), 0)
+  const hasGroups = groups.length > 0
+
+  console.log('TBTN groups:', groups.length, groups)
 
   return (
-    <section className="screen tbtn-screen">
+    <section className="screen tbtn-screen tbtn-page">
       <div className="tbtn-header">
         <button type="button" className="back-link tbtn-back" onClick={onBack}>
           <span className="round-icon button-icon">
@@ -1437,39 +1600,109 @@ function TeamOverviewPage({ teams, isLoading, error, onBack }) {
         </button>
         <div>
           <h1>TBTN - Tổng quan nhóm</h1>
-          <span>Hôm nay</span>
         </div>
       </div>
 
       <div className="screen-body tbtn-body">
-        <div className="tbtn-summary-card">
-          <span>Tổng doanh thu hệ thống</span>
-          <strong>{formatCurrency(totalRevenue)}</strong>
-          <div className={`tbtn-summary-card__growth is-${growthTone}`}>
-            {growthTone === 'up' ? <TrendingUp size={17} /> : <TrendingDown size={17} />}
-            {totalGrowth >= 0 ? '+' : ''}
-            {formatCurrency(totalGrowth)} so với hôm qua
+        <section className="tbtn-hero-card">
+          <span>Tổng doanh thu toàn công ty</span>
+          <strong>{formatTbtnMoney(totalCompanyRevenue)}</strong>
+        </section>
+
+        <div className="tbtn-mini-stats">
+          <div>
+            <span>Nhóm</span>
+            <strong>{groups.length}</strong>
+          </div>
+          <div>
+            <span>TVV có hợp đồng</span>
+            <strong>{totalActiveAdvisors}</strong>
           </div>
         </div>
 
-        {isLoading ? <div className="empty-state">Đang tải tổng quan nhóm...</div> : null}
-        {!isLoading && error ? <div className="empty-state">Không lấy được dữ liệu TBTN: {error}</div> : null}
-        {!isLoading && !error && !teams.length ? (
+        {isLoading && !hasGroups ? <TbtnLoadingState /> : null}
+        {!isLoading && !hasGroups && error ? <div className="empty-state">Không lấy được dữ liệu TBTN: {error}</div> : null}
+        {!isLoading && !hasGroups && !error ? (
           <div className="empty-state">Chưa có dữ liệu TBTN từ Google Sheet.</div>
         ) : null}
 
-        {!isLoading && !error && teams.length ? (
-          <div className="team-grid">
-            {teams.map((team) => (
-              <TeamCard key={team.id} team={team} />
-            ))}
-          </div>
+        {hasGroups ? (
+          <section className="tbtn-list-section">
+            <div className="tbtn-section-header">
+              <h2>Danh sách nhóm</h2>
+              <span>{groups.length} nhóm</span>
+            </div>
+            <div className="tbtn-group-list">
+              {groups.map((group, index) => (
+                <GroupRowCard
+                  key={group.id}
+                  group={group}
+                  rank={group.stt || index + 1}
+                  maxRevenue={maxRevenue}
+                  totalCompanyRevenue={totalCompanyRevenue}
+                />
+              ))}
+            </div>
+          </section>
         ) : null}
+        {hasGroups && specialRow ? <TbtnUnassignedCard team={specialRow} /> : null}
       </div>
     </section>
   )
 }
 
+function TbtnLoadingState() {
+  return (
+    <div className="tbtn-loading-list">
+      {[1, 2, 3].map((item) => (
+        <div key={item} className="tbtn-group-card tbtn-skeleton-card" />
+      ))}
+    </div>
+  )
+}
+
+function GroupRowCard({ group, rank, maxRevenue, totalCompanyRevenue }) {
+  const revenue = normalizeRevenue(group.doanhThu ?? group.revenue)
+  const activeAdvisors = normalizeInteger(group.tvvHoatDong ?? group.activeAdvisors)
+  const progressPercent = maxRevenue > 0 ? Math.max(0, Math.min(100, (revenue / maxRevenue) * 100)) : 0
+  const percentOfTotal = totalCompanyRevenue > 0 ? (revenue / totalCompanyRevenue) * 100 : 0
+  const isTop = maxRevenue > 0 && revenue === maxRevenue
+  const isZero = revenue <= 0
+
+  return (
+    <article className={`tbtn-group-card ${isTop ? 'is-leading' : ''} ${isZero ? 'is-zero' : ''}`}>
+      <div className="tbtn-group-card-main">
+        <span className="tbtn-rank">{rank}</span>
+        <div className="tbtn-group-main">
+          <div className="tbtn-group-title-row">
+            <h3 className="tbtn-group-name">{group.tenNhom ?? group.name}</h3>
+            {isTop ? <span className="tbtn-leading-badge">Dẫn đầu</span> : null}
+          </div>
+          <span className="tbtn-group-meta">{activeAdvisors} TVV có hợp đồng</span>
+        </div>
+        <div className="tbtn-group-side">
+          <strong className="tbtn-group-revenue">{formatTbtnMoney(revenue)}</strong>
+          <span className="tbtn-group-percent">{percentOfTotal.toFixed(1)}%</span>
+        </div>
+      </div>
+      <div className="tbtn-progress-track" aria-label={`Tiến độ doanh thu ${Math.round(progressPercent)}%`}>
+        <div className="tbtn-progress-fill" style={{ width: `${progressPercent}%` }} />
+      </div>
+    </article>
+  )
+}
+
+function TbtnUnassignedCard({ team }) {
+  return (
+    <article className="tbtn-unassigned-card">
+      <div>
+        <span>Doanh thu chưa thuộc nhóm/ban</span>
+        <h2>Lê Thị Mỹ Châu</h2>
+      </div>
+      <strong>{formatTbtnMoney(team.doanhThu)}</strong>
+    </article>
+  )
+}
 function TeamAvatar({ team }) {
   const initials = getInitials(team.truongNhom || team.tenNhom)
   return (
@@ -1772,6 +2005,8 @@ function AdminView({
   setCampaignRankings,
   setBanners,
   setTbtnRows,
+  tbtnSheetUrl,
+  setTbtnSheetUrl,
   setIsAdminLoggedIn,
   fetchAdvisors,
   fetchCompetitions,
@@ -1789,7 +2024,7 @@ function AdminView({
   const [advisorImportError, setAdvisorImportError] = useState('')
   const [advisorImportMessage, setAdvisorImportMessage] = useState('')
   const [tbtnImportState, setTbtnImportState] = useState({
-    remoteUrl: '',
+    remoteUrl: tbtnSheetUrl || '',
     preview: [],
     source: '',
     error: '',
@@ -2040,7 +2275,7 @@ function AdminView({
       if (Array.isArray(json?.data)) return json.data
       throw new Error('JSON không đúng định dạng mảng dữ liệu.')
     }
-    return convertCsvRowsToObjects(parseCsv(await response.text()))
+    return parseCsvTextToObjects(await response.text())
   }
 
   const fetchGoogleSheetCsvRows = async (url) => {
@@ -2124,24 +2359,36 @@ function AdminView({
   }
 
   const handleTbtnRemoteImport = async () => {
+    if (!tbtnImportState.remoteUrl.trim()) {
+      setTbtnImportState((current) => ({
+        ...current,
+        error: 'Vui lòng dán link Google Sheet TBTN.',
+        message: '',
+      }))
+      return []
+    }
+
     try {
       const rows = tbtnImportState.remoteUrl.includes('docs.google.com')
-        ? await fetchGoogleSheetCsvRows(tbtnImportState.remoteUrl)
+        ? await fetchTbtnRowsFromUrl(tbtnImportState.remoteUrl)
         : await parseRemoteDataset(tbtnImportState.remoteUrl)
       const normalized = rows.map(normalizeImportedTeam).filter(Boolean)
+      setTbtnRows(normalized)
       setTbtnImportState((current) => ({
         ...current,
         preview: normalized,
         source: `Google Sheet/API: ${current.remoteUrl}`,
         error: '',
-        message: '',
+        message: 'Kết nối thành công. Đã tải dữ liệu TBTN.',
       }))
+      return normalized
     } catch (remoteError) {
       setTbtnImportState((current) => ({
         ...current,
         error: remoteError?.message ?? 'Không lấy được dữ liệu TBTN.',
         message: '',
       }))
+      return []
     }
   }
 
@@ -2156,6 +2403,25 @@ function AdminView({
       message: 'Đã lưu dữ liệu TBTN vào trình duyệt.',
     }))
     showAdminToast('Đã cập nhật dữ liệu TBTN')
+  }
+
+  const saveTbtnSheetUrl = async () => {
+    const nextUrl = tbtnImportState.remoteUrl.trim()
+    if (!nextUrl) {
+      setTbtnImportState((current) => ({ ...current, error: 'Vui lòng dán link Google Sheet TBTN.', message: '' }))
+      return
+    }
+
+    window.localStorage.setItem(TBTN_URL_STORAGE_KEY, nextUrl)
+    setTbtnSheetUrl(nextUrl)
+    const rows = await handleTbtnRemoteImport()
+    setTbtnImportState((current) => ({
+      ...current,
+      remoteUrl: nextUrl,
+      error: rows.length ? '' : current.error,
+      message: rows.length ? 'Đã lưu link và tải lại dữ liệu TBTN.' : current.message,
+    }))
+    if (rows.length) showAdminToast('Đã lưu link TBTN')
   }
 
   const getCampaignImport = (campaignId) =>
@@ -2798,6 +3064,17 @@ function AdminView({
                   message={tbtnImportState.message}
                 />
 
+                <div className="tbtn-config-actions">
+                  <div className="form-success">Hãy copy link đúng tab sheet đang chứa dữ liệu TBTN, bao gồm gid nếu có nhiều sheet.</div>
+                  <button type="button" className="button-light" onClick={handleTbtnRemoteImport}>
+                    Kiểm tra kết nối
+                  </button>
+                  <button type="button" className="button-primary" onClick={saveTbtnSheetUrl}>
+                    Lưu link Google Sheet TBTN
+                  </button>
+                  {tbtnSheetUrl ? <div className="form-success">Đang dùng link: {tbtnSheetUrl}</div> : null}
+                </div>
+
                 <TeamPreviewPanel
                   title="Preview TBTN / Trưởng nhóm"
                   source={tbtnImportState.source}
@@ -2816,13 +3093,16 @@ function AdminView({
                 <div className="admin-section__head admin-section__head--compact">
                   <div>
                     <h2>Dữ liệu đang dùng</h2>
-                    <p>{tbtnRows.length} nhóm đã lưu trong trình duyệt.</p>
+                    <p>
+                      {buildTbtnDataset(tbtnRows).groups.length} nhóm đã parse từ Google Sheet · Tổng doanh thu{' '}
+                      {formatTbtnMoney(buildTbtnDataset(tbtnRows).totalRow?.doanhThu || 0)}
+                    </p>
                   </div>
                 </div>
 
                 <div className="admin-list">
                   {tbtnRows.length ? (
-                    tbtnRows.map((team) => <TeamAdminRow key={team.id} team={team} />)
+                    buildTbtnDataset(tbtnRows).groups.map((team) => <TeamAdminRow key={team.id} team={team} />)
                   ) : (
                     <div className="empty-state">Chưa có dữ liệu TBTN.</div>
                   )}
@@ -2936,7 +3216,7 @@ function TeamPreviewPanel({ title, source, rows, onApply, onClear }) {
       </div>
 
       <div className="preview-list">
-        {rows.map((team) => (
+        {rows.slice(0, 5).map((team) => (
           <TeamAdminRow key={team.id} team={team} />
         ))}
       </div>
