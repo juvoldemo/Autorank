@@ -101,6 +101,21 @@ create table if not exists public.page_banners (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.advisor_profiles (
+  id uuid primary key default gen_random_uuid(),
+  advisor_code text unique,
+  advisor_name text not null,
+  normalized_name text not null,
+  team_name text,
+  avatar_url text,
+  avatar_path text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists advisor_profiles_normalized_name_idx
+on public.advisor_profiles (normalized_name);
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'autorank-assets',
@@ -108,6 +123,19 @@ values (
   true,
   10485760,
   array['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'advisor-avatars',
+  'advisor-avatars',
+  true,
+  5242880,
+  array['image/jpeg', 'image/png', 'image/webp']
 )
 on conflict (id) do update set
   public = excluded.public,
@@ -142,6 +170,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists page_banners_set_updated_at on public.page_banners;
 create trigger page_banners_set_updated_at
 before update on public.page_banners
+for each row execute function public.set_updated_at();
+
+drop trigger if exists advisor_profiles_set_updated_at on public.advisor_profiles;
+create trigger advisor_profiles_set_updated_at
+before update on public.advisor_profiles
 for each row execute function public.set_updated_at();
 
 do $$
@@ -190,12 +223,20 @@ begin
   ) then
     alter publication supabase_realtime add table public.page_banners;
   end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'advisor_profiles'
+  ) then
+    alter publication supabase_realtime add table public.advisor_profiles;
+  end if;
 end $$;
 
 alter table public.advisors enable row level security;
 alter table public.competitions enable row level security;
 alter table public.campaign_rankings enable row level security;
 alter table public.page_banners enable row level security;
+alter table public.advisor_profiles enable row level security;
 
 drop policy if exists "Public read advisors" on public.advisors;
 create policy "Public read advisors" on public.advisors for select using (true);
@@ -217,6 +258,19 @@ create policy "Public read page banners" on public.page_banners for select using
 drop policy if exists "Public write page banners" on public.page_banners;
 create policy "Public write page banners" on public.page_banners for all using (true) with check (true);
 
+drop policy if exists "Public read advisor profiles" on public.advisor_profiles;
+create policy "Public read advisor profiles" on public.advisor_profiles for select using (true);
+drop policy if exists "Authenticated write advisor profiles" on public.advisor_profiles;
+create policy "Authenticated write advisor profiles"
+on public.advisor_profiles for all
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
+drop policy if exists "Public write advisor profiles" on public.advisor_profiles;
+create policy "Public write advisor profiles"
+on public.advisor_profiles for all
+using (true)
+with check (true);
+
 drop policy if exists "Public read autorank assets" on storage.objects;
 create policy "Public read autorank assets"
 on storage.objects for select
@@ -237,3 +291,40 @@ drop policy if exists "Public delete autorank assets" on storage.objects;
 create policy "Public delete autorank assets"
 on storage.objects for delete
 using (bucket_id = 'autorank-assets');
+
+drop policy if exists "Public read advisor avatars" on storage.objects;
+create policy "Public read advisor avatars"
+on storage.objects for select
+using (bucket_id = 'advisor-avatars');
+
+drop policy if exists "Authenticated upload advisor avatars" on storage.objects;
+create policy "Authenticated upload advisor avatars"
+on storage.objects for insert
+with check (bucket_id = 'advisor-avatars' and auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated update advisor avatars" on storage.objects;
+create policy "Authenticated update advisor avatars"
+on storage.objects for update
+using (bucket_id = 'advisor-avatars' and auth.role() = 'authenticated')
+with check (bucket_id = 'advisor-avatars' and auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated delete advisor avatars" on storage.objects;
+create policy "Authenticated delete advisor avatars"
+on storage.objects for delete
+using (bucket_id = 'advisor-avatars' and auth.role() = 'authenticated');
+
+drop policy if exists "Public upload advisor avatars" on storage.objects;
+create policy "Public upload advisor avatars"
+on storage.objects for insert
+with check (bucket_id = 'advisor-avatars');
+
+drop policy if exists "Public update advisor avatars" on storage.objects;
+create policy "Public update advisor avatars"
+on storage.objects for update
+using (bucket_id = 'advisor-avatars')
+with check (bucket_id = 'advisor-avatars');
+
+drop policy if exists "Public delete advisor avatars" on storage.objects;
+create policy "Public delete advisor avatars"
+on storage.objects for delete
+using (bucket_id = 'advisor-avatars');

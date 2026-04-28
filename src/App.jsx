@@ -20,6 +20,12 @@ import {
   X,
 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
+import {
+  fetchAdvisorProfiles,
+  mergeAdvisorsWithProfiles,
+  normalizeName as normalizeAdvisorName,
+  uploadAdvisorAvatar,
+} from './services/advisorProfiles'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -42,6 +48,8 @@ const SHEET_CONFIG = {
 
 const TBTN_STORAGE_KEY = 'autorank_tbtn_rows'
 const TBTN_URL_STORAGE_KEY = 'autorank_tbtn_url'
+const TOP_DAY_URL_STORAGE_KEY = 'topDaySheetUrl'
+const TOP_DAY_LEGACY_URL_STORAGE_KEY = 'autorank_top_ngay_url'
 
 const ADMIN_CREDENTIALS = {
   username: 'bvntkh',
@@ -417,9 +425,10 @@ const fetchCompetitionRows = async () => {
 }
 
 const loadSupabaseData = async () => {
-  const [advisorRows, campaignRows, rankingsResult, bannersResult] = await Promise.all([
+  const [advisorRows, campaignRows, profiles, rankingsResult, bannersResult] = await Promise.all([
     fetchAdvisorRows(),
     fetchCompetitionRows(),
+    fetchAdvisorProfiles(),
     supabase
       .from(SUPABASE_TABLES.campaignRankings)
       .select('*')
@@ -434,9 +443,14 @@ const loadSupabaseData = async () => {
   console.log('Loaded competitions from Supabase', campaignRows)
 
   return {
-    advisors: advisorRows.map(fromAdvisorRow),
+    advisors: mergeAdvisorsWithProfiles(advisorRows.map(fromAdvisorRow), profiles),
     campaigns: campaignRows.map(fromCampaignRow),
-    campaignRankings: fromCampaignRankingRows(rankingsResult.data),
+    campaignRankings: Object.fromEntries(
+      Object.entries(fromCampaignRankingRows(rankingsResult.data)).map(([campaignId, rows]) => [
+        campaignId,
+        mergeAdvisorsWithProfiles(rows, profiles),
+      ]),
+    ),
     banners: fromBannerRows(bannersResult.data),
     isEmpty:
       !advisorRows.length &&
@@ -548,7 +562,11 @@ const uploadImageToStorage = async (file, folder) => {
 
 const normalizeRevenue = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
-  const cleaned = String(value ?? '').replace(/[^\d.-]/g, '')
+  const raw = String(value ?? '').trim()
+  const cleaned = raw
+    .replace(/[^\d,.-]/g, '')
+    .replace(/[.,](?=\d{3}(\D|$))/g, '')
+    .replace(/,/g, '.')
   const parsed = Number(cleaned)
   return Number.isFinite(parsed) ? parsed : 0
 }
@@ -564,6 +582,9 @@ const formatCurrency = (value) =>
     currency: 'VND',
     maximumFractionDigits: 0,
   }).format(normalizeRevenue(value))
+
+const formatPlainVnd = (value) =>
+  `${normalizeRevenue(value).toLocaleString('vi-VN')} đ`
 
 const formatTbtnMoney = (value) =>
   `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')} đ`
@@ -593,6 +614,10 @@ function normalizeImportedAdvisor(raw, index = 0) {
     'Họ tên',
     'Họ và tên',
     'Tên đại lý',
+    'Tên tư vấn viên',
+    'Ten tu van vien',
+    'Tên TVV',
+    'Ten TVV',
     'Ten dai ly',
     'Ho ten',
     'Name',
@@ -603,6 +628,10 @@ function normalizeImportedAdvisor(raw, index = 0) {
   const team = getRawValue(raw, [
     'Đội',
     'Tên nhóm',
+    'Nhóm',
+    'Nhom',
+    'Đội',
+    'Doi',
     'Doi',
     'Ten nhom',
     'Nhom',
@@ -616,11 +645,24 @@ function normalizeImportedAdvisor(raw, index = 0) {
     '膼峄檌 nh贸m',
   ])
   const initials = getRawValue(raw, ['Viết tắt', 'Viet tat', 'Initials', 'initials'], getInitials(name))
-  const revenue = getRawValue(raw, ['Doanh thu', 'AFYP', 'Revenue', 'revenue'], 0)
+  const revenue = getRawValue(raw, ['Doanh thu', 'doanh thu', 'AFYP', 'Tổng AFYP', 'Tong AFYP', 'Revenue', 'revenue'], 0)
   const note = getRawValue(raw, ['Ghi chú', 'Ghi chu', 'Note', 'note'])
   const avatar = getRawValue(raw, ['Avatar', 'Avatar URL', 'avatar'])
   const activeStatus = getRawValue(raw, ['active_status', 'Trạng thái', 'Trang thai', 'Active'], true)
-  const rawId = getRawValue(raw, ['id', 'ID', 'Mã', 'Ma', 'Mã TVV', 'Ma TVV'])
+  const rawId = getRawValue(raw, [
+    'id',
+    'ID',
+    'Mã',
+    'Ma',
+    'Mã TVV',
+    'Ma TVV',
+    'Mã đại lý',
+    'Ma dai ly',
+    'Advisor code',
+    'advisor_code',
+    'Code',
+    'code',
+  ])
 
   if (!String(name).trim()) return null
   const normalizedName = String(name).trim()
@@ -628,6 +670,8 @@ function normalizeImportedAdvisor(raw, index = 0) {
 
   return {
     id: stableId,
+    advisor_code: rawId ? String(rawId).trim() : '',
+    normalized_name: normalizeAdvisorName(normalizedName),
     name: normalizedName,
     team: String(team || '').trim(),
     initials: String(initials || getInitials(name)).toUpperCase().slice(0, 2),
@@ -771,6 +815,30 @@ function parseCsvTextToObjects(text) {
   return XLSX.utils.sheet_to_json(firstSheet, { defval: '' })
 }
 
+function getGoogleSheetGid(url) {
+  const parsedUrl = new URL(String(url || '').trim())
+  const queryGid = parsedUrl.searchParams.get('gid')
+  if (queryGid) return queryGid
+
+  const hashGid = String(parsedUrl.hash || '').match(/gid=(\d+)/)?.[1]
+  return hashGid || '0'
+}
+
+function getGoogleSheetId(url) {
+  const match = String(url).match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
+  if (!match) throw new Error('Link Google Sheet không hợp lệ.')
+  return match[1]
+}
+
+function createGoogleSheetCsvExportUrl(url) {
+  const spreadsheetId = getGoogleSheetId(url)
+  const gid = getGoogleSheetGid(url)
+  return {
+    gid,
+    csvUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`,
+  }
+}
+
 function convertGoogleSheetUrlToCsvUrl(url, sheetName = '') {
   const match = String(url).match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
   if (!match) {
@@ -797,6 +865,9 @@ const normalizeSheetHeader = (value) =>
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\u0111/g, 'd')
     .replace(/\u0110/g, 'd')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
     .toLowerCase()
 
 const TBTN_HEADER_ALIASES = {
@@ -833,47 +904,85 @@ function createTbtnHeaderMap(headers) {
   return headerMap
 }
 
+const isEmptyCsvCell = (value) => String(value ?? '').trim() === ''
+
+function createTbtnObjectsFromMatrix(matrix) {
+  const rows = safeArray(matrix).filter((row) => safeArray(row).some((cell) => !isEmptyCsvCell(cell)))
+  const searchRows = rows.slice(0, 10)
+  const headerIndex = searchRows.findIndex((row) => {
+    const normalizedHeaders = safeArray(row).map(normalizeSheetHeader)
+    return (
+      normalizedHeaders.some((header) => headerMatches(header, TBTN_HEADER_ALIASES.stt)) &&
+      normalizedHeaders.some((header) => headerMatches(header, TBTN_HEADER_ALIASES.name)) &&
+      normalizedHeaders.some((header) => headerMatches(header, TBTN_HEADER_ALIASES.revenue))
+    )
+  })
+
+  if (headerIndex < 0) {
+    const sampledHeaders = searchRows
+      .flatMap((row) => safeArray(row).map((cell) => String(cell ?? '').trim()).filter(Boolean))
+      .slice(0, 12)
+      .join(', ')
+    throw new Error(`Không tìm thấy header TBTN: STT, Tên nhóm, Tổng AFYP. Header đọc được: ${sampledHeaders || '(trống)'}. Google Sheet chưa public hoặc fetch sai sheet.`)
+  }
+
+  const headers = safeArray(rows[headerIndex]).map((header) => String(header ?? '').replace(/^\uFEFF/, '').trim())
+  const headerMap = createTbtnHeaderMap(headers)
+  const bodyRows = rows.slice(headerIndex + 1)
+
+  return bodyRows.map((row, index) => {
+    const item = {}
+    headers.forEach((header, columnIndex) => {
+      if (!header) return
+      item[header] = row[columnIndex] ?? ''
+    })
+
+    return {
+      ...item,
+      STT: item[headerMap.stt] ?? index + 1,
+      'Ten nhom': item[headerMap.name] ?? '',
+      'Tong AFYP': item[headerMap.revenue] ?? 0,
+      'So luong TVV co hop dong': item[headerMap.tvv] ?? 0,
+    }
+  })
+}
+
 function parseTbtnCsvText(csvText) {
   const parsed = Papa.parse(String(csvText || '').replace(/^\uFEFF/, ''), {
-    header: true,
     skipEmptyLines: true,
-    transformHeader: (header) => String(header ?? '').replace(/^\uFEFF/, '').trim(),
   })
   if (parsed.errors?.length) console.log('[TBTN] PapaParse errors', parsed.errors)
-  const rawRows = safeArray(parsed.data).filter((row) =>
-    Object.values(row || {}).some((value) => String(value ?? '').trim() !== ''),
-  )
-  const headers = parsed.meta?.fields?.length ? parsed.meta.fields : Object.keys(rawRows[0] || {})
-  const headerMap = createTbtnHeaderMap(headers)
-  return rawRows.map((row, index) => ({
-    STT: row[headerMap.stt] ?? index + 1,
-    'Ten nhom': row[headerMap.name] ?? '',
-    'Tong AFYP': row[headerMap.revenue] ?? 0,
-    'So luong TVV co hop dong': row[headerMap.tvv] ?? 0,
-  }))
+  return createTbtnObjectsFromMatrix(parsed.data)
 }
-async function fetchTbtnRowsFromUrl(url) {
+async function fetchTBTNData(url) {
   if (!url?.trim()) throw new Error('Chưa có link Google Sheet TBTN.')
 
   const googleSheetUrl = url.trim()
-  const convertedCsvUrl = googleSheetUrl.includes('docs.google.com')
-    ? convertGoogleSheetUrlToCsvUrl(googleSheetUrl)
-    : googleSheetUrl
+  const isGoogleSheet = googleSheetUrl.includes('docs.google.com')
+  const { gid, csvUrl } = isGoogleSheet
+    ? createGoogleSheetCsvExportUrl(googleSheetUrl)
+    : { gid: '0', csvUrl: googleSheetUrl }
 
-  console.log('[TBTN] googleSheetUrl', googleSheetUrl)
-  console.log('[TBTN] convertedCsvUrl', convertedCsvUrl)
+  console.log('TBTN Sheet URL:', googleSheetUrl)
+  console.log('TBTN gid:', gid)
+  console.log('TBTN CSV URL:', csvUrl)
 
-  const response = await fetch(convertedCsvUrl)
+  const response = await fetch(csvUrl)
   if (!response.ok) {
     throw new Error(`Không fetch được Google Sheet TBTN. Mã lỗi ${response.status}. Kiểm tra quyền xem công khai.`)
   }
 
   const contentType = response.headers.get('content-type') || ''
   const text = await response.text()
+  if (!text.trim() || /<html/i.test(text) || /<!DOCTYPE/i.test(text) || /Google Docs/i.test(text)) {
+    throw new Error('Google Sheet chưa public hoặc fetch sai sheet.')
+  }
   if (
+    !text.trim() ||
     contentType.includes('text/html') ||
-    text.trim().startsWith('<!DOCTYPE html') ||
-    text.trim().startsWith('<html')
+    /<html/i.test(text) ||
+    /<!DOCTYPE/i.test(text) ||
+    /Google Docs/i.test(text)
   ) {
     throw new Error('Sheet chưa bật quyền xem công khai hoặc link không trỏ tới dữ liệu CSV.')
   }
@@ -897,6 +1006,8 @@ async function fetchTbtnRowsFromUrl(url) {
   if (!normalized.length) throw new Error('CSV TBTN không có dòng dữ liệu hợp lệ.')
   return normalized
 }
+
+const fetchTbtnRowsFromUrl = fetchTBTNData
 
 function loadStoredTbtnRows() {
   try {
@@ -966,6 +1077,14 @@ function App() {
   const [tbtnSheetUrl, setTbtnSheetUrl] = useState(
     () => SHEET_CONFIG.teams || window.localStorage.getItem(TBTN_URL_STORAGE_KEY) || '',
   )
+  const [topDaySheetUrl, setTopDaySheetUrl] = useState(
+    () =>
+      SHEET_CONFIG.topDay ||
+      window.localStorage.getItem(TOP_DAY_URL_STORAGE_KEY) ||
+      window.localStorage.getItem(TOP_DAY_LEGACY_URL_STORAGE_KEY) ||
+      '',
+  )
+  const [topDayAdvisors, setTopDayAdvisors] = useState([])
 
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
@@ -995,8 +1114,8 @@ function App() {
 
   const fetchAdvisors = useCallback(async () => {
     if (!isSupabaseConfigured) return []
-    const rows = await fetchAdvisorRows()
-    const remoteAdvisors = rows.map(fromAdvisorRow)
+    const [rows, profiles] = await Promise.all([fetchAdvisorRows(), fetchAdvisorProfiles()])
+    const remoteAdvisors = mergeAdvisorsWithProfiles(rows.map(fromAdvisorRow), profiles)
     setAdvisors((current) => (rowsEqual(current, remoteAdvisors) ? current : remoteAdvisors))
     return remoteAdvisors
   }, [])
@@ -1039,6 +1158,7 @@ function App() {
         scheduleReload,
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.banners }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'advisor_profiles' }, scheduleReload)
       .subscribe()
 
     return () => {
@@ -1083,6 +1203,9 @@ function App() {
         setTbtnRows={setTbtnRows}
         tbtnSheetUrl={tbtnSheetUrl}
         setTbtnSheetUrl={setTbtnSheetUrl}
+        topDaySheetUrl={topDaySheetUrl}
+        setTopDaySheetUrl={setTopDaySheetUrl}
+        setTopDayAdvisors={setTopDayAdvisors}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchAdvisors={fetchAdvisors}
         fetchCompetitions={fetchCompetitions}
@@ -1100,6 +1223,9 @@ function App() {
       setBanners={setBanners}
       tbtnRows={tbtnRows}
       tbtnSheetUrl={tbtnSheetUrl}
+      topDaySheetUrl={topDaySheetUrl}
+      topDayAdvisors={topDayAdvisors}
+      setTopDayAdvisors={setTopDayAdvisors}
       navigate={navigate}
     />
   )
@@ -1126,6 +1252,9 @@ function MainView({
   setBanners,
   tbtnRows,
   tbtnSheetUrl,
+  topDaySheetUrl,
+  topDayAdvisors,
+  setTopDayAdvisors,
   navigate,
 }) {
   const [activeTab, setActiveTab] = useState('bang-vang')
@@ -1160,16 +1289,16 @@ function MainView({
     return {
       shared: SHEET_CONFIG.shared || local('autorank_google_sheet_url'),
       topMonth: SHEET_CONFIG.topMonth || local('autorank_top_thang_url'),
-      topDay: SHEET_CONFIG.topDay || local('autorank_top_ngay_url'),
+      topDay: topDaySheetUrl || SHEET_CONFIG.topDay || local(TOP_DAY_URL_STORAGE_KEY) || local(TOP_DAY_LEGACY_URL_STORAGE_KEY),
       teams: tbtnSheetUrl || local(TBTN_URL_STORAGE_KEY),
     }
-  }, [tbtnSheetUrl])
+  }, [tbtnSheetUrl, topDaySheetUrl])
 
   useEffect(() => {
     const loadRankings = async () => {
       const configs = [
         ['month', configuredSheets.topMonth || configuredSheets.shared, 'TopThang'],
-        ['day', configuredSheets.topDay || configuredSheets.shared, 'TopNgay'],
+        ['day', configuredSheets.topDay, 'TopNgay'],
       ]
 
       configs.forEach(async ([period, url, sheetName]) => {
@@ -1179,8 +1308,11 @@ function MainView({
           [period]: { ...current[period], loading: true, error: '' },
         }))
         try {
-          const rows = await fetchSheetRows(url, sheetName)
-          const normalized = sortByRevenueDesc(rows.map(normalizeImportedAdvisor).filter(Boolean)).slice(0, 10)
+          const rows = period === 'day' ? await fetchSheetRows(url) : await fetchSheetRows(url, sheetName)
+          const normalizedRows = sortByRevenueDesc(rows.map(normalizeImportedAdvisor).filter(Boolean)).slice(0, 10)
+          const profiles = isSupabaseConfigured ? await fetchAdvisorProfiles() : []
+          const normalized = mergeAdvisorsWithProfiles(normalizedRows, profiles)
+          if (period === 'day') setTopDayAdvisors(normalized)
           setRemoteRankings((current) => ({
             ...current,
             [period]: { rows: normalized, loading: false, error: '' },
@@ -1195,7 +1327,7 @@ function MainView({
     }
 
     loadRankings()
-  }, [configuredSheets])
+  }, [configuredSheets, setTopDayAdvisors])
 
   useEffect(() => {
     const url = configuredSheets.teams || configuredSheets.shared
@@ -1208,9 +1340,7 @@ function MainView({
     const loadTeams = async () => {
       setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
       try {
-        const rows = configuredSheets.teams
-          ? await fetchTbtnRowsFromUrl(url)
-          : (await fetchSheetRows(url, 'TBTN')).map(normalizeImportedTeam).filter(Boolean)
+        const rows = await fetchTBTNData(url)
         if (!isMounted) return
         setTeamOverview({
           rows,
@@ -1235,9 +1365,12 @@ function MainView({
   }, [configuredSheets, tbtnRows])
 
   const topMonthRows = remoteRankings.month.rows.length ? remoteRankings.month.rows : advisors
-  const topDayRows = remoteRankings.day.rows
+  const topDayRows = topDayAdvisors.length ? topDayAdvisors : remoteRankings.day.rows
+  console.log('Top day advisors for render:', topDayAdvisors)
   const activeLeaderboardRows = rankingPeriod === 'day' ? topDayRows : topMonthRows
   const activeRankingState = remoteRankings[rankingPeriod]
+  const activeRankingError = rankingPeriod === 'day' && topDayRows.length ? '' : activeRankingState.error
+  const activeRankingLoading = rankingPeriod === 'day' && topDayRows.length ? false : activeRankingState.loading
   const sortedAdvisors = useMemo(
     () => sortByRevenueDesc(activeLeaderboardRows).slice(0, 10),
     [activeLeaderboardRows],
@@ -1345,14 +1478,15 @@ function MainView({
               key={`bang-vang-${leaderboardAnimationKey}`}
               podium={podium}
               rankingRows={rankingRows}
+              advisors={sortedAdvisors}
               advisorCount={sortedAdvisors.length}
               rankingPeriod={rankingPeriod}
               onRankingPeriodChange={(period) => {
                 setRankingPeriod(period)
                 setLeaderboardAnimationKey((current) => current + 1)
               }}
-              isLoading={activeRankingState.loading}
-              error={activeRankingState.error}
+              isLoading={activeRankingLoading}
+              error={activeRankingError}
               bannerImage={getBannerImage(banners, 'bang-vang')}
               onBannerUpload={(file) => updatePageBanner('bang-vang', file)}
               onAdminAccess={() => navigate('/admin')}
@@ -1404,6 +1538,7 @@ function MainView({
 function BangVangTab({
   podium,
   rankingRows,
+  advisors,
   advisorCount,
   rankingPeriod,
   onRankingPeriodChange,
@@ -1414,6 +1549,7 @@ function BangVangTab({
   onAdminAccess,
 }) {
   const hasAdvisors = advisorCount > 0
+  const isDayRanking = rankingPeriod === 'day'
 
   return (
     <section className="screen">
@@ -1435,23 +1571,38 @@ function BangVangTab({
           <div className="empty-state">Chưa có dữ liệu tư vấn viên</div>
         ) : (
           <>
-            <div className="podium-section podium-grid">
-              <PodiumCard advisor={podium[0]} rank={2} delay={80} />
-              <PodiumCard advisor={podium[1]} rank={1} delay={0} />
-              <PodiumCard advisor={podium[2]} rank={3} delay={160} />
-            </div>
+            {isDayRanking ? (
+              <div className="card-list daily-ranking-list">
+                {advisors.map((advisor, index) => (
+                  <DailyRankingCard
+                    key={advisor.id}
+                    advisor={advisor}
+                    rank={index + 1}
+                    delay={index * 60}
+                  />
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="podium-section podium-grid">
+                  <PodiumCard advisor={podium[0]} rank={2} delay={80} />
+                  <PodiumCard advisor={podium[1]} rank={1} delay={0} />
+                  <PodiumCard advisor={podium[2]} rank={3} delay={160} />
+                </div>
 
-            <div className="section-title">Bảng xếp hạng tiếp theo</div>
-            <div className="card-list">
-              {rankingRows.map((advisor, index) => (
-                <RankingCard
-                  key={advisor.id}
-                  advisor={advisor}
-                  rank={index + 4}
-                  delay={240 + index * 80}
-                />
-              ))}
-            </div>
+                <div className="section-title">B?ng x?p h?ng ti?p theo</div>
+                <div className="card-list">
+                  {rankingRows.map((advisor, index) => (
+                    <RankingCard
+                      key={advisor.id}
+                      advisor={advisor}
+                      rank={index + 4}
+                      delay={240 + index * 80}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1581,10 +1732,9 @@ function HiddenAdminEntry({ onAdminAccess }) {
 }
 
 function TeamOverviewPage({ teams, isLoading, error, onBack }) {
-  const { groups, specialRow, totalRow } = buildTbtnDataset(teams)
+  const { groups, totalRow } = buildTbtnDataset(teams)
   const totalCompanyRevenue = totalRow?.doanhThu ?? groups.reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
   const totalActiveAdvisors = groups.reduce((sum, team) => sum + normalizeInteger(team.tvvHoatDong), 0)
-  const maxRevenue = Math.max(...groups.map((team) => normalizeRevenue(team.doanhThu)), 0)
   const hasGroups = groups.length > 0
 
   console.log('TBTN groups:', groups.length, groups)
@@ -1638,14 +1788,12 @@ function TeamOverviewPage({ teams, isLoading, error, onBack }) {
                   key={group.id}
                   group={group}
                   rank={group.stt || index + 1}
-                  maxRevenue={maxRevenue}
                   totalCompanyRevenue={totalCompanyRevenue}
                 />
               ))}
             </div>
           </section>
         ) : null}
-        {hasGroups && specialRow ? <TbtnUnassignedCard team={specialRow} /> : null}
       </div>
     </section>
   )
@@ -1661,12 +1809,12 @@ function TbtnLoadingState() {
   )
 }
 
-function GroupRowCard({ group, rank, maxRevenue, totalCompanyRevenue }) {
+function GroupRowCard({ group, rank, totalCompanyRevenue }) {
   const revenue = normalizeRevenue(group.doanhThu ?? group.revenue)
   const activeAdvisors = normalizeInteger(group.tvvHoatDong ?? group.activeAdvisors)
-  const progressPercent = maxRevenue > 0 ? Math.max(0, Math.min(100, (revenue / maxRevenue) * 100)) : 0
   const percentOfTotal = totalCompanyRevenue > 0 ? (revenue / totalCompanyRevenue) * 100 : 0
-  const isTop = maxRevenue > 0 && revenue === maxRevenue
+  const safePercent = Math.min(100, Math.max(0, percentOfTotal))
+  const isTop = rank === 1 && revenue > 0
   const isZero = revenue <= 0
 
   return (
@@ -1685,24 +1833,13 @@ function GroupRowCard({ group, rank, maxRevenue, totalCompanyRevenue }) {
           <span className="tbtn-group-percent">{percentOfTotal.toFixed(1)}%</span>
         </div>
       </div>
-      <div className="tbtn-progress-track" aria-label={`Tiến độ doanh thu ${Math.round(progressPercent)}%`}>
-        <div className="tbtn-progress-fill" style={{ width: `${progressPercent}%` }} />
+      <div className="tbtn-progress-track" aria-label={`Tỷ trọng doanh thu ${safePercent.toFixed(1)}%`}>
+        <div className="tbtn-progress-fill" style={{ width: `${safePercent}%` }} />
       </div>
     </article>
   )
 }
 
-function TbtnUnassignedCard({ team }) {
-  return (
-    <article className="tbtn-unassigned-card">
-      <div>
-        <span>Doanh thu chưa thuộc nhóm/ban</span>
-        <h2>Lê Thị Mỹ Châu</h2>
-      </div>
-      <strong>{formatTbtnMoney(team.doanhThu)}</strong>
-    </article>
-  )
-}
 function TeamAvatar({ team }) {
   const initials = getInitials(team.truongNhom || team.tenNhom)
   return (
@@ -1802,10 +1939,22 @@ function PageBanner({
 }
 function AvatarCircle({ advisor, size = 'md' }) {
   const initials = advisor?.initials || getInitials(advisor?.name || '')
+  const avatar = advisor?.avatar || advisor?.avatar_url || ''
+  const [hasImageError, setHasImageError] = useState(false)
+
+  useEffect(() => {
+    setHasImageError(false)
+  }, [avatar])
+
   return (
     <div className={`avatar-circle avatar-circle--${size}`}>
-      {advisor?.avatar ? (
-        <img src={advisor.avatar} alt={advisor.name || initials} className="avatar-circle__image" />
+      {avatar && !hasImageError ? (
+        <img
+          src={avatar}
+          alt={advisor.name || initials}
+          className="avatar-circle__image"
+          onError={() => setHasImageError(true)}
+        />
       ) : (
         <span>{initials}</span>
       )}
@@ -1847,6 +1996,24 @@ function RankingCard({ advisor, rank, delay = 0 }) {
         <div className="ranking-card__team">{displayTeamName(advisor.team)}</div>
       </div>
       <div className="ranking-card__value">{formatCompactMoney(advisor.revenue)}</div>
+    </div>
+  )
+}
+
+function DailyRankingCard({ advisor, rank, delay = 0 }) {
+  const medalClass = rank <= 3 ? `daily-ranking-card--top-${rank}` : 'daily-ranking-card--default'
+
+  return (
+    <div
+      className={`daily-ranking-card ranking-card--animated ${medalClass}`}
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      <div className="daily-ranking-card__rank">{rank}</div>
+      <div className="daily-ranking-card__content">
+        <strong>{advisor.name}</strong>
+        <span>{displayTeamName(advisor.team)}</span>
+      </div>
+      <div className="daily-ranking-card__value">{formatPlainVnd(advisor.revenue)}</div>
     </div>
   )
 }
@@ -2007,6 +2174,9 @@ function AdminView({
   setTbtnRows,
   tbtnSheetUrl,
   setTbtnSheetUrl,
+  topDaySheetUrl,
+  setTopDaySheetUrl,
+  setTopDayAdvisors,
   setIsAdminLoggedIn,
   fetchAdvisors,
   fetchCompetitions,
@@ -2023,6 +2193,12 @@ function AdminView({
   const [advisorRemoteUrl, setAdvisorRemoteUrl] = useState('')
   const [advisorImportError, setAdvisorImportError] = useState('')
   const [advisorImportMessage, setAdvisorImportMessage] = useState('')
+  const [topDayImportState, setTopDayImportState] = useState({
+    remoteUrl: topDaySheetUrl || '',
+    preview: [],
+    error: '',
+    message: '',
+  })
   const [tbtnImportState, setTbtnImportState] = useState({
     remoteUrl: tbtnSheetUrl || '',
     preview: [],
@@ -2043,6 +2219,7 @@ function AdminView({
   const [campaignDraftError, setCampaignDraftError] = useState('')
   const [isSavingCampaignDraft, setIsSavingCampaignDraft] = useState(false)
   const [adminToast, setAdminToast] = useState('')
+  const [avatarUploadStatus, setAvatarUploadStatus] = useState({})
 
   const alertSupabaseError = (action, supabaseError) => {
     console.error(action, supabaseError)
@@ -2052,6 +2229,23 @@ function AdminView({
   const showAdminToast = (message) => {
     setAdminToast(message)
     window.setTimeout(() => setAdminToast(''), 2600)
+  }
+
+  useEffect(() => {
+    setTopDayImportState((current) =>
+      current.remoteUrl === topDaySheetUrl ? current : { ...current, remoteUrl: topDaySheetUrl || '' },
+    )
+  }, [topDaySheetUrl])
+
+  const mergeWithStoredAvatars = async (rows) => {
+    if (!isSupabaseConfigured) return rows
+    try {
+      const profiles = await fetchAdvisorProfiles()
+      return mergeAdvisorsWithProfiles(rows, profiles)
+    } catch (profileError) {
+      console.error('Không thể lấy advisor_profiles để merge avatar', profileError)
+      return rows
+    }
   }
 
   const handleLogin = (event) => {
@@ -2232,18 +2426,28 @@ function AdminView({
   }
 
   const handleAvatarUpload = async (id, file, scope, campaignId) => {
+    if (!file) return
+    const statusKey = `${scope}:${campaignId || 'main'}:${id}`
+    const advisor =
+      scope === 'advisors'
+        ? advisors.find((item) => item.id === id)
+        : safeArray(campaignRankings[campaignId]).find((item) => item.id === id)
+    if (!advisor) return
+
+    setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saving' }))
     try {
-      const avatar = await uploadImageToStorage(
-        file,
-        scope === 'advisors' ? `advisors/${id}` : `campaign-rankings/${campaignId}/${id}`,
-      )
+      const { avatarUrl } = await uploadAdvisorAvatar(file, advisor)
       if (scope === 'advisors') {
-        updateAdvisor(id, 'avatar', avatar)
-        return
+        updateAdvisor(id, 'avatar', avatarUrl)
+      } else {
+        updateCampaignRanking(campaignId, id, 'avatar', avatarUrl)
       }
-      updateCampaignRanking(campaignId, id, 'avatar', avatar)
+      setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saved' }))
+      showAdminToast('Đã lưu avatar')
     } catch (uploadError) {
-      console.error(uploadError)
+      console.error('Không thể upload/lưu avatar tư vấn viên', uploadError)
+      setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'error' }))
+      alertSupabaseError('Không thể upload/lưu avatar tư vấn viên', uploadError)
     }
   }
 
@@ -2305,7 +2509,7 @@ function AdminView({
   const handleAdvisorExcelImport = async (file) => {
     try {
       const rows = await parseExcelFile(file)
-      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
       await saveAdvisorsToSupabase(normalized)
       await fetchAdvisors()
       setAdvisorPreview(normalized)
@@ -2325,9 +2529,10 @@ function AdminView({
       const rows = advisorRemoteUrl.includes('docs.google.com')
         ? await fetchGoogleSheetCsvRows(advisorRemoteUrl)
         : await parseRemoteDataset(advisorRemoteUrl)
-      const normalized = sortByRevenueDesc(
+      const normalizedRows = sortByRevenueDesc(
         rows.map(normalizeImportedAdvisor).filter(Boolean),
       ).slice(0, 10)
+      const normalized = await mergeWithStoredAvatars(normalizedRows)
       await saveAdvisorsToSupabase(normalized)
       await fetchAdvisors()
       setAdvisorPreview([])
@@ -2340,6 +2545,66 @@ function AdminView({
       setAdvisorImportError(remoteError.message)
       setAdvisorImportMessage('')
     }
+  }
+
+  const fetchTopDayAdvisors = async (url) => {
+    const rows = await fetchSheetRows(url)
+    const normalizedRows = sortByRevenueDesc(
+      rows.map(normalizeImportedAdvisor).filter(Boolean),
+    ).slice(0, 10)
+    return mergeWithStoredAvatars(normalizedRows)
+  }
+
+  const reloadTopDayData = async (url = topDayImportState.remoteUrl) => {
+    const nextUrl = String(url || '').trim()
+    if (!nextUrl) {
+      setTopDayImportState((current) => ({
+        ...current,
+        error: 'Vui lòng dán link Google Sheet Top ngày.',
+        message: '',
+      }))
+      return []
+    }
+
+    try {
+      const normalized = await fetchTopDayAdvisors(nextUrl)
+      setTopDayAdvisors(normalized)
+      setTopDayImportState((current) => ({
+        ...current,
+        remoteUrl: nextUrl,
+        preview: normalized,
+        error: '',
+        message: `Đã cập nhật dữ liệu Top ngày. Tìm thấy ${normalized.length} tư vấn viên.`,
+      }))
+      showAdminToast('Đã cập nhật dữ liệu Top ngày')
+      return normalized
+    } catch (topDayError) {
+      console.error('Không đọc được Google Sheet Top ngày', topDayError)
+      setTopDayImportState((current) => ({
+        ...current,
+        error: 'Không đọc được Google Sheet Top ngày. Hãy kiểm tra quyền chia sẻ sheet hoặc link.',
+        message: '',
+      }))
+      return []
+    }
+  }
+
+  const saveTopDaySheetUrl = async () => {
+    const nextUrl = String(topDayImportState.remoteUrl || '').trim()
+    if (!nextUrl) {
+      setTopDayImportState((current) => ({
+        ...current,
+        error: 'Vui lòng dán link Google Sheet Top ngày.',
+        message: '',
+      }))
+      return
+    }
+
+    window.localStorage.setItem(TOP_DAY_URL_STORAGE_KEY, nextUrl)
+    window.localStorage.setItem(TOP_DAY_LEGACY_URL_STORAGE_KEY, nextUrl)
+    setTopDaySheetUrl(nextUrl)
+    const rows = await reloadTopDayData(nextUrl)
+    if (rows.length) showAdminToast('Đã lưu Top ngày')
   }
 
   const applyAdvisorPreview = async () => {
@@ -2369,10 +2634,12 @@ function AdminView({
     }
 
     try {
-      const rows = tbtnImportState.remoteUrl.includes('docs.google.com')
-        ? await fetchTbtnRowsFromUrl(tbtnImportState.remoteUrl)
-        : await parseRemoteDataset(tbtnImportState.remoteUrl)
-      const normalized = rows.map(normalizeImportedTeam).filter(Boolean)
+      const normalized = await fetchTBTNData(tbtnImportState.remoteUrl)
+      const dataset = buildTbtnDataset(normalized)
+      const totalRevenue =
+        normalizeRevenue(dataset.totalRow?.doanhThu) ||
+        [...dataset.groups, dataset.specialRow].filter(Boolean).reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
+      const successMessage = `✓ Đã kết nối thành công\n✓ Tìm thấy ${dataset.groups.length} nhóm\n✓ Tổng doanh thu: ${totalRevenue.toLocaleString('vi-VN')} đ`
       setTbtnRows(normalized)
       setTbtnImportState((current) => ({
         ...current,
@@ -2381,6 +2648,7 @@ function AdminView({
         error: '',
         message: 'Kết nối thành công. Đã tải dữ liệu TBTN.',
       }))
+      setTbtnImportState((current) => ({ ...current, message: successMessage }))
       return normalized
     } catch (remoteError) {
       setTbtnImportState((current) => ({
@@ -2442,7 +2710,7 @@ function AdminView({
   const handleRankingExcelImport = async (campaignId, file) => {
     try {
       const rows = await parseExcelFile(file)
-      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
       setCampaignImport(campaignId, {
         preview: normalized,
         source: `Excel: ${file.name}`,
@@ -2459,7 +2727,7 @@ function AdminView({
     const currentImport = getCampaignImport(campaignId)
     try {
       const rows = await parseRemoteDataset(currentImport.remoteUrl)
-      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
       setCampaignImport(campaignId, {
         preview: normalized,
         source: `Google Sheet/API: ${currentImport.remoteUrl}`,
@@ -2489,7 +2757,7 @@ function AdminView({
   const handleCampaignDraftRankingExcelImport = async (file) => {
     try {
       const rows = await parseExcelFile(file)
-      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
       setCampaignDraftImport({
         ...campaignDraftImport,
         preview: normalized,
@@ -2509,7 +2777,7 @@ function AdminView({
       const rows = campaignDraftImport.remoteUrl.includes('docs.google.com')
         ? await fetchGoogleSheetCsvRows(campaignDraftImport.remoteUrl)
         : await parseRemoteDataset(campaignDraftImport.remoteUrl)
-      const normalized = rows.map(normalizeImportedAdvisor).filter(Boolean)
+      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
       setCampaignDraftImport({
         ...campaignDraftImport,
         preview: normalized,
@@ -2644,6 +2912,55 @@ function AdminView({
                   message={advisorImportMessage}
                 />
 
+                <div className="subsection-box">
+                  <div className="subsection-box__head">
+                    <div>
+                      <h3>Dữ liệu Top ngày</h3>
+                      <p>Nhập link Google Sheet có cột STT, Tên tư vấn viên, Nhóm, Doanh thu.</p>
+                    </div>
+                  </div>
+                  <div className="import-tools__row import-tools__row--remote">
+                    <input
+                      placeholder="Dán link Google Sheet Top ngày"
+                      value={topDayImportState.remoteUrl}
+                      onChange={(event) =>
+                        setTopDayImportState((current) => ({
+                          ...current,
+                          remoteUrl: event.target.value,
+                          error: '',
+                          message: '',
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="tbtn-config-actions">
+                    <button type="button" className="button-primary" onClick={saveTopDaySheetUrl}>
+                      Lưu Top ngày
+                    </button>
+                    <button type="button" className="button-light" onClick={() => reloadTopDayData()}>
+                      Tải lại dữ liệu Top ngày
+                    </button>
+                  </div>
+                  {topDaySheetUrl ? <div className="form-success">Đang dùng link Top ngày: {topDaySheetUrl}</div> : null}
+                  {topDayImportState.error ? <div className="form-error">{topDayImportState.error}</div> : null}
+                  {topDayImportState.message ? <div className="form-success">{topDayImportState.message}</div> : null}
+                  {topDayImportState.preview.length ? (
+                    <div className="preview-list">
+                      {topDayImportState.preview.slice(0, 5).map((advisor) => (
+                        <div key={advisor.id} className="preview-row">
+                          <AvatarCircle advisor={advisor} />
+                          <div className="preview-row__content">
+                            <strong>{advisor.name}</strong>
+                            <span>
+                              {displayTeamName(advisor.team)} - {formatCurrency(advisor.revenue)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
                 <PreviewPanel
                   title="Preview dữ liệu tư vấn viên"
                   source={advisorPreviewSource}
@@ -2658,6 +2975,8 @@ function AdminView({
                 <div className="admin-list">
                   {sortByRevenueDesc(advisors).map((advisor) => {
                     const expanded = expandedAdvisorId === advisor.id
+                    const avatarStatusKey = `advisors:main:${advisor.id}`
+                    const avatarStatus = avatarUploadStatus[avatarStatusKey]
                     return (
                       <div key={advisor.id} className="compact-card">
                         <div className="compact-card__summary">
@@ -2705,11 +3024,15 @@ function AdminView({
                                 <input
                                   type="file"
                                   accept="image/*"
-                                  onChange={(e) =>
+                                  onChange={(e) => {
                                     handleAvatarUpload(advisor.id, e.target.files?.[0], 'advisors')
-                                  }
+                                    e.target.value = ''
+                                  }}
                                 />
                               </label>
+                              {avatarStatus === 'saving' ? <span className="avatar-save-status">Đang lưu...</span> : null}
+                              {avatarStatus === 'saved' ? <span className="avatar-save-status">Đã lưu avatar</span> : null}
+                              {avatarStatus === 'error' ? <span className="avatar-save-status avatar-save-status--error">Lưu lỗi</span> : null}
                             </div>
 
                             <div className="editor-grid">
@@ -2921,7 +3244,10 @@ function AdminView({
                               />
 
                               <div className="admin-list nested-list">
-                                {rankings.map((advisor) => (
+                                {rankings.map((advisor) => {
+                                  const avatarStatusKey = `campaign:${campaign.id}:${advisor.id}`
+                                  const avatarStatus = avatarUploadStatus[avatarStatusKey]
+                                  return (
                                   <div key={advisor.id} className="editor-card compact-editor-card">
                                     <div className="editor-card__top">
                                       <AvatarCircle advisor={advisor} />
@@ -2933,16 +3259,20 @@ function AdminView({
                                         <input
                                           type="file"
                                           accept="image/*"
-                                          onChange={(e) =>
+                                          onChange={(e) => {
                                             handleAvatarUpload(
                                               advisor.id,
                                               e.target.files?.[0],
                                               'campaign',
                                               campaign.id,
                                             )
-                                          }
+                                            e.target.value = ''
+                                          }}
                                         />
                                       </label>
+                                      {avatarStatus === 'saving' ? <span className="avatar-save-status">Đang lưu...</span> : null}
+                                      {avatarStatus === 'saved' ? <span className="avatar-save-status">Đã lưu avatar</span> : null}
+                                      {avatarStatus === 'error' ? <span className="avatar-save-status avatar-save-status--error">Lưu lỗi</span> : null}
                                     </div>
 
                                     <div className="editor-grid">
@@ -3015,7 +3345,7 @@ function AdminView({
                                       <Trash2 size={17} strokeWidth={2} />
                                     </button>
                                   </div>
-                                ))}
+                                )})}
                               </div>
                             </div>
                           </div>
@@ -3065,6 +3395,7 @@ function AdminView({
                 />
 
                 <div className="tbtn-config-actions">
+                  <div className="form-success">Vào Google Sheet &gt; Share &gt; Anyone with the link &gt; Viewer. Dùng link của đúng tab BaoCaoNhom có gid.</div>
                   <div className="form-success">Hãy copy link đúng tab sheet đang chứa dữ liệu TBTN, bao gồm gid nếu có nhiều sheet.</div>
                   <button type="button" className="button-light" onClick={handleTbtnRemoteImport}>
                     Kiểm tra kết nối
