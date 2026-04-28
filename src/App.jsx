@@ -32,6 +32,7 @@ import {
 } from './services/settingsService'
 import { syncDailyRankings, syncMonthlyRankings, syncTeamOverview } from './services/importService'
 import { fetchDailyRankings, fetchMonthlyRankings } from './services/rankingService'
+import { fetchTeamOverview } from './services/teamOverviewService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -1278,14 +1279,32 @@ function MainView({
 
   useEffect(() => {
     const url = configuredSheets.teams || configuredSheets.shared
-    if (!url) {
-      setTeamOverview((current) => ({ ...current, rows: tbtnRows, loading: false, error: '' }))
-      return
-    }
-
     let isMounted = true
     const loadTeams = async () => {
       setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
+      if (isSupabaseConfigured) {
+        try {
+          const supabaseRows = await fetchTeamOverview()
+          if (!isMounted) return
+          if (supabaseRows.length) {
+            setTeamOverview({
+              rows: supabaseRows,
+              loading: false,
+              error: '',
+            })
+            return
+          }
+        } catch (supabaseError) {
+          console.error('Không tải được TBTN từ Supabase, thử nguồn dự phòng.', supabaseError)
+        }
+      }
+
+      if (!url) {
+        if (!isMounted) return
+        setTeamOverview((current) => ({ ...current, rows: tbtnRows, loading: false, error: '' }))
+        return
+      }
+
       try {
         const rows = await fetchTBTNData(url)
         if (!isMounted) return

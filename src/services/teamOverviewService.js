@@ -19,6 +19,18 @@ const toAppTeam = (row) => ({
   reportDate: row.report_date,
 })
 
+const uniqueLatestRows = (rows) => {
+  const latestDate = rows[0]?.report_date
+  const seen = new Set()
+  return rows.filter((row) => {
+    if (row.report_date !== latestDate) return false
+    const key = row.normalized_team_name || `${row.rank}-${row.team_name}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export async function fetchTeamOverview() {
   try {
     ensureSupabase()
@@ -29,8 +41,7 @@ export async function fetchTeamOverview() {
       .order('rank', { ascending: true })
     if (error) throw error
     const rows = data ?? []
-    const latestDate = rows[0]?.report_date
-    return rows.filter((row) => row.report_date === latestDate).map(toAppTeam)
+    return uniqueLatestRows(rows).map(toAppTeam)
   } catch (error) {
     console.error('fetchTeamOverview error', error)
     throw new Error(`Không tải được TBTN từ Supabase: ${error.message}`, { cause: error })
