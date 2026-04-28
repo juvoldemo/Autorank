@@ -33,6 +33,11 @@ import {
 import { syncDailyRankings, syncMonthlyRankings, syncTeamOverview } from './services/importService'
 import { fetchDailyRankings, fetchMonthlyRankings } from './services/rankingService'
 import { fetchTeamOverview } from './services/teamOverviewService'
+import {
+  DEFAULT_COMPETITION_LEADERBOARD_SHEET,
+  getCompetitionLeaderboardEntries,
+  syncCompetitionLeaderboardFromSheet,
+} from './services/competitionLeaderboardService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -40,6 +45,7 @@ import './App.css'
 const SUPABASE_TABLES = {
   campaigns: 'competitions',
   campaignRankings: 'campaign_rankings',
+  competitionLeaderboard: 'competition_leaderboard_entries',
   banners: 'page_banners',
 }
 
@@ -300,6 +306,8 @@ const createCampaignDraft = () => ({
   target: '',
   rules: '',
   published: true,
+  leaderboardSheetUrl: '',
+  leaderboardSheetName: DEFAULT_COMPETITION_LEADERBOARD_SHEET,
 })
 
 const fromAdvisorRow = (row) => ({
@@ -326,6 +334,9 @@ const toCampaignRow = (campaign) => ({
   target: campaign.target ?? '',
   rules: campaign.rules ?? '',
   published: getComputedCompetitionStatus(campaign) !== 'ended',
+  leaderboard_sheet_url: campaign.leaderboardSheetUrl ?? campaign.leaderboard_sheet_url ?? '',
+  leaderboard_sheet_name:
+    campaign.leaderboardSheetName ?? campaign.leaderboard_sheet_name ?? DEFAULT_COMPETITION_LEADERBOARD_SHEET,
 })
 
 const fromCampaignRow = (row) => ({
@@ -342,6 +353,8 @@ const fromCampaignRow = (row) => ({
   target: row.target ?? '',
   rules: row.rules ?? '',
   published: row.published ?? true,
+  leaderboardSheetUrl: row.leaderboard_sheet_url ?? '',
+  leaderboardSheetName: row.leaderboard_sheet_name ?? DEFAULT_COMPETITION_LEADERBOARD_SHEET,
 })
 
 const toCampaignRankingRow = (campaignId, advisor, index = 0) => ({
@@ -354,6 +367,13 @@ const toCampaignRankingRow = (campaignId, advisor, index = 0) => ({
   avatar: advisor.avatar ?? '',
   sort_order: index,
 })
+
+const stripCompetitionLeaderboardConfig = (row) => {
+  const baseRow = { ...row }
+  delete baseRow.leaderboard_sheet_url
+  delete baseRow.leaderboard_sheet_name
+  return baseRow
+}
 
 const fromCampaignRankingRows = (rows) =>
   rows.reduce((items, row) => {
@@ -454,6 +474,24 @@ const saveCompetitionToSupabase = async (competition) => {
 
   if (error) {
     console.error('supabase insert error', error)
+    const missingLeaderboardColumns =
+      error.message?.includes('leaderboard_sheet_url') ||
+      error.message?.includes('leaderboard_sheet_name') ||
+      error.details?.includes('leaderboard_sheet_url') ||
+      error.details?.includes('leaderboard_sheet_name')
+
+    if (missingLeaderboardColumns) {
+      const fallbackRow = stripCompetitionLeaderboardConfig(row)
+      const fallback = await supabase
+        .from('competitions')
+        .upsert(fallbackRow, { onConflict: 'id' })
+        .select('*')
+
+      if (fallback.error) throw fallback.error
+      console.warn('Saved competition without leaderboard sheet columns. Run Supabase migration 20260429_create_competition_leaderboard_entries.sql.')
+      return fallback.data
+    }
+
     throw error
   }
 
@@ -527,6 +565,15 @@ const formatPlainVnd = (value) =>
 
 const formatTbtnMoney = (value) =>
   `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')} đ`
+
+const formatCompetitionMoney = (value) =>
+  `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')}đ`
+
+const formatCompetitionDate = (value) => {
+  if (!value) return '-'
+  const [year, month, day] = String(value).slice(0, 10).split('-')
+  return year && month && day ? `${day}/${month}/${year}` : String(value)
+}
 
 const normalizeInteger = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
@@ -1073,6 +1120,11 @@ function App() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: SUPABASE_TABLES.campaignRankings },
+        scheduleReload,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: SUPABASE_TABLES.competitionLeaderboard },
         scheduleReload,
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.banners }, scheduleReload)
@@ -2054,16 +2106,49 @@ function DetailModal({ campaign, onClose }) {
   )
 }
 
-function RankingModal({ campaign, rankings, onClose }) {
+function RankingModal({ campaign, onClose }) {
+  const [leaderboardState, setLeaderboardState] = useState({
+    rows: [],
+    loading: true,
+    error: '',
+  })
+
+  useEffect(() => {
+    let isMounted = true
+    const loadRows = async () => {
+      setLeaderboardState({ rows: [], loading: true, error: '' })
+      try {
+        const rows = await getCompetitionLeaderboardEntries(campaign.id)
+        if (!isMounted) return
+        setLeaderboardState({ rows, loading: false, error: '' })
+      } catch (loadError) {
+        if (!isMounted) return
+        setLeaderboardState({
+          rows: [],
+          loading: false,
+          error: loadError?.message ?? 'Không đọc được BXH CTTĐ từ Supabase.',
+        })
+      }
+    }
+    loadRows()
+    return () => {
+      isMounted = false
+    }
+  }, [campaign.id])
+
   return (
-    <ModalShell title={`BXH - ${campaign.title}`} onClose={onClose}>
+    <ModalShell title={`BXH - ${campaign.title}`} onClose={onClose} className="ranking-modal">
       <CampaignVisual campaign={campaign} compact />
       <div className="modal-card">
         <h3>{campaign.title}</h3>
-        {rankings.length ? (
-          <div className="card-list compact-list">
-            {rankings.map((advisor, index) => (
-              <RankingCard key={advisor.id} advisor={advisor} rank={index + 1} />
+        {leaderboardState.loading ? (
+          <div className="empty-state">Đang tải BXH CTTĐ...</div>
+        ) : leaderboardState.error ? (
+          <div className="empty-state">Không đọc được Supabase: {leaderboardState.error}</div>
+        ) : leaderboardState.rows.length ? (
+          <div className="competition-leaderboard-list">
+            {leaderboardState.rows.map((entry, index) => (
+              <CompetitionLeaderboardCard key={entry.id} entry={entry} displayRank={index + 1} toneIndex={index} />
             ))}
           </div>
         ) : (
@@ -2074,6 +2159,45 @@ function RankingModal({ campaign, rankings, onClose }) {
   )
 }
 
+function CompetitionLeaderboardCard({ entry, displayRank, toneIndex = 0 }) {
+  const contractNumber =
+    entry.raw_data?.['Số hợp đồng'] ||
+    entry.raw_data?.['So hop dong'] ||
+    entry.raw_data?.['Số HĐ'] ||
+    entry.raw_data?.['Hop dong'] ||
+    ''
+
+  return (
+    <article className={`competition-leaderboard-card competition-leaderboard-card--tone-${(toneIndex % 5) + 1}`}>
+      <div className="competition-leaderboard-card__top">
+        <span className="competition-leaderboard-card__rank">{entry.rank || displayRank}</span>
+        <div className="competition-leaderboard-card__person">
+          <strong>{entry.advisor_name}</strong>
+          <span>{entry.group_name || 'Chưa có nhóm'}</span>
+        </div>
+        <div className="competition-leaderboard-card__reward">
+          <span>Thưởng hợp đồng</span>
+          <strong>{formatCompetitionMoney(entry.reward_achieved_t4)}</strong>
+        </div>
+      </div>
+      <div className="competition-leaderboard-card__grid">
+        <div className="competition-leaderboard-card__customer">
+          <span>Khách hàng</span>
+          <strong>{entry.customer_name || '-'}</strong>
+          {contractNumber ? <small>HĐ {contractNumber}</small> : null}
+        </div>
+        <div>
+          <span>Ngày thu</span>
+          <strong>{formatCompetitionDate(entry.collection_date)}</strong>
+        </div>
+        <div>
+          <span>PĐT/IP hợp đồng</span>
+          <strong>{formatCompetitionMoney(entry.total_pdt_tvv)}</strong>
+        </div>
+      </div>
+    </article>
+  )
+}
 function PosterModal({ campaign, onClose }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
@@ -2103,7 +2227,7 @@ function PosterModal({ campaign, onClose }) {
   )
 }
 
-function ModalShell({ title, children, onClose }) {
+function ModalShell({ title, children, onClose, className = '' }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -2113,8 +2237,8 @@ function ModalShell({ title, children, onClose }) {
   }, [])
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+    <div className={`modal-overlay ${className ? `modal-overlay--${className}` : ''}`} onClick={onClose}>
+      <div className={`modal-panel ${className ? `modal-panel--${className}` : ''}`} onClick={(event) => event.stopPropagation()}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="round-icon icon-close" onClick={onClose}>
@@ -2170,6 +2294,7 @@ function AdminView({
     [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || '',
   }))
   const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
+  const [leaderboardSyncStatus, setLeaderboardSyncStatus] = useState({})
   const [importLogs, setImportLogs] = useState([])
 
   useEffect(() => {
@@ -2451,11 +2576,51 @@ function AdminView({
     }))
   }
 
+  void addCampaignRanking
+
   const deleteCampaignRanking = (campaignId, id) => {
     setCampaignRankings((current) => ({
       ...current,
       [campaignId]: safeArray(current[campaignId]).filter((item) => item.id !== id),
     }))
+  }
+
+  const syncCampaignLeaderboard = async (campaign, fallbackSheetUrl = '') => {
+    const sheetUrl = String(campaign.leaderboardSheetUrl ?? '').trim() || String(fallbackSheetUrl ?? '').trim()
+    const sheetName = String(campaign.leaderboardSheetName ?? DEFAULT_COMPETITION_LEADERBOARD_SHEET).trim()
+
+    if (!sheetUrl) {
+      setLeaderboardSyncStatus((current) => ({
+        ...current,
+        [campaign.id]: { loading: false, message: '', error: 'Vui lòng nhập link Google Sheet BXH CTTĐ.' },
+      }))
+      return
+    }
+
+    setLeaderboardSyncStatus((current) => ({
+      ...current,
+      [campaign.id]: { loading: true, message: '', error: '' },
+    }))
+
+    try {
+      await saveCompetitionToSupabase({ ...campaign, leaderboardSheetUrl: sheetUrl, leaderboardSheetName: sheetName })
+      const rows = await syncCompetitionLeaderboardFromSheet({
+        competitionId: campaign.id,
+        sheetUrl,
+        sheetName,
+      })
+      await fetchCompetitions()
+      setLeaderboardSyncStatus((current) => ({
+        ...current,
+        [campaign.id]: { loading: false, message: `Đã đồng bộ ${rows.length} dòng BXH CTTĐ.`, error: '' },
+      }))
+      showAdminToast(`Đã đồng bộ ${rows.length} dòng BXH CTTĐ`)
+    } catch (syncError) {
+      setLeaderboardSyncStatus((current) => ({
+        ...current,
+        [campaign.id]: { loading: false, message: '', error: syncError?.message ?? String(syncError) },
+      }))
+    }
   }
 
   const handleAvatarUpload = async (id, file, scope, campaignId) => {
@@ -2584,6 +2749,10 @@ function AdminView({
     setCampaignRankings((current) => ({ ...current, [campaignId]: currentImport.preview }))
     setCampaignImport(campaignId, { preview: [], source: '' })
   }
+
+  void handleRankingExcelImport
+  void handleRankingRemoteImport
+  void applyRankingPreview
 
   const handleCampaignDraftImageUpload = async (file) => {
     try {
@@ -2849,6 +3018,7 @@ function AdminView({
                     const expanded = expandedCampaignId === campaign.id
                     const campaignImport = getCampaignImport(campaign.id)
                     const rankings = sortByRevenueDesc(campaignRankings[campaign.id] ?? [])
+                    const leaderboardStatus = leaderboardSyncStatus[campaign.id] ?? {}
 
                     return (
                       <div key={campaign.id} className="compact-card admin-campaign-card">
@@ -2948,45 +3118,45 @@ function AdminView({
                                   }
                                 />
                               </label>
+                              <label className="full-row">
+                                <span>Google Sheet BXH CTTĐ</span>
+                                <input
+                                  value={campaign.leaderboardSheetUrl || ''}
+                                  onChange={(e) => updateCampaign(campaign.id, 'leaderboardSheetUrl', e.target.value)}
+                                  placeholder="Dán link Google Sheet CTTD_GIO_TO"
+                                />
+                              </label>
+                              <label>
+                                <span>Tên sheet/tab BXH</span>
+                                <input
+                                  value={campaign.leaderboardSheetName || DEFAULT_COMPETITION_LEADERBOARD_SHEET}
+                                  onChange={(e) => updateCampaign(campaign.id, 'leaderboardSheetName', e.target.value)}
+                                  placeholder={DEFAULT_COMPETITION_LEADERBOARD_SHEET}
+                                />
+                              </label>
                             </div>
 
                             <div className="subsection-box">
                               <div className="subsection-box__head">
                                 <div>
                                   <h3>BXH chương trình</h3>
-                                  <p>Nhập tay, upload Excel hoặc lấy từ Google Sheet / API.</p>
+                                  <p>Nhập link Google Sheet ở trên rồi đồng bộ vào Supabase.</p>
                                 </div>
                                 <button
                                   type="button"
                                   className="button-primary"
-                                  onClick={() => addCampaignRanking(campaign.id)}
+                                  onClick={() => syncCampaignLeaderboard(campaign, campaignImport.remoteUrl)}
+                                  disabled={leaderboardStatus.loading}
                                 >
                                   <span className="round-icon button-icon">
-                                    <Plus size={16} />
+                                    {leaderboardStatus.loading ? <span className="loading-spinner" /> : <Upload size={16} />}
                                   </span>
-                                  Thêm TVV
+                                  {leaderboardStatus.loading ? 'Đang đồng bộ...' : 'Đồng bộ BXH CTTĐ'}
                                 </button>
                               </div>
 
-                              <ImportTools
-                                remoteUrl={campaignImport.remoteUrl}
-                                setRemoteUrl={(value) =>
-                                  setCampaignImport(campaign.id, { remoteUrl: value })
-                                }
-                                onFileImport={(file) => handleRankingExcelImport(campaign.id, file)}
-                                onRemoteImport={() => handleRankingRemoteImport(campaign.id)}
-                                error={campaignImport.error}
-                              />
-
-                              <PreviewPanel
-                                title="Preview BXH chương trình"
-                                source={campaignImport.source}
-                                rows={campaignImport.preview}
-                                onApply={() => applyRankingPreview(campaign.id)}
-                                onClear={() =>
-                                  setCampaignImport(campaign.id, { preview: [], source: '' })
-                                }
-                              />
+                              {leaderboardStatus.message ? <div className="form-success">{leaderboardStatus.message}</div> : null}
+                              {leaderboardStatus.error ? <div className="form-error">{leaderboardStatus.error}</div> : null}
 
                               <div className="admin-list nested-list">
                                 {rankings.map((advisor) => {

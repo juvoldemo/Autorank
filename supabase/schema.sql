@@ -174,6 +174,8 @@ alter table public.competitions add column if not exists reward text not null de
 alter table public.competitions add column if not exists target text not null default '';
 alter table public.competitions add column if not exists rules text not null default '';
 alter table public.competitions add column if not exists published boolean not null default true;
+alter table public.competitions add column if not exists leaderboard_sheet_url text not null default '';
+alter table public.competitions add column if not exists leaderboard_sheet_name text not null default 'CTTD_GIO_TO';
 alter table public.competitions add column if not exists created_at timestamptz not null default now();
 alter table public.competitions add column if not exists updated_at timestamptz not null default now();
 
@@ -188,6 +190,37 @@ create table if not exists public.campaign_rankings (
   sort_order integer not null default 0,
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.competition_leaderboard_entries (
+  id uuid primary key default gen_random_uuid(),
+  competition_id text,
+  sheet_source text,
+  rank integer,
+  advisor_name text not null,
+  group_name text,
+  customer_name text,
+  collection_date date,
+  total_pdt_tvv numeric not null default 0,
+  reward_achieved_t4 numeric not null default 0,
+  raw_data jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.competition_leaderboard_entries
+  alter column competition_id type text using competition_id::text;
+
+create unique index if not exists competition_leaderboard_entries_unique_row_uidx
+on public.competition_leaderboard_entries (
+  competition_id,
+  advisor_name,
+  customer_name,
+  collection_date,
+  total_pdt_tvv
+);
+
+create index if not exists competition_leaderboard_entries_competition_idx
+on public.competition_leaderboard_entries (competition_id, total_pdt_tvv desc, rank asc);
 
 do $$
 begin
@@ -305,6 +338,11 @@ create trigger campaign_rankings_set_updated_at
 before update on public.campaign_rankings
 for each row execute function public.set_updated_at();
 
+drop trigger if exists competition_leaderboard_entries_set_updated_at on public.competition_leaderboard_entries;
+create trigger competition_leaderboard_entries_set_updated_at
+before update on public.competition_leaderboard_entries
+for each row execute function public.set_updated_at();
+
 drop trigger if exists page_banners_set_updated_at on public.page_banners;
 create trigger page_banners_set_updated_at
 before update on public.page_banners
@@ -377,6 +415,13 @@ begin
 
   if not exists (
     select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'competition_leaderboard_entries'
+  ) then
+    alter publication supabase_realtime add table public.competition_leaderboard_entries;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'page_banners'
   ) then
     alter publication supabase_realtime add table public.page_banners;
@@ -414,6 +459,7 @@ end $$;
 alter table public.advisors enable row level security;
 alter table public.competitions enable row level security;
 alter table public.campaign_rankings enable row level security;
+alter table public.competition_leaderboard_entries enable row level security;
 alter table public.page_banners enable row level security;
 alter table public.advisor_profiles enable row level security;
 alter table public.app_settings enable row level security;
@@ -436,6 +482,11 @@ drop policy if exists "Public read campaign rankings" on public.campaign_ranking
 create policy "Public read campaign rankings" on public.campaign_rankings for select using (true);
 drop policy if exists "Public write campaign rankings" on public.campaign_rankings;
 create policy "Public write campaign rankings" on public.campaign_rankings for all using (true) with check (true);
+
+drop policy if exists "Public read competition leaderboard entries" on public.competition_leaderboard_entries;
+create policy "Public read competition leaderboard entries" on public.competition_leaderboard_entries for select using (true);
+drop policy if exists "Public write competition leaderboard entries" on public.competition_leaderboard_entries;
+create policy "Public write competition leaderboard entries" on public.competition_leaderboard_entries for all using (true) with check (true);
 
 drop policy if exists "Public read page banners" on public.page_banners;
 create policy "Public read page banners" on public.page_banners for select using (true);
