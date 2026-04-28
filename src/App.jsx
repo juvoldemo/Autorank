@@ -11,8 +11,6 @@ import {
   Plus,
   Settings,
   Target,
-  TrendingDown,
-  TrendingUp,
   Trash2,
   Trophy,
   Upload,
@@ -24,8 +22,17 @@ import {
   fetchAdvisorProfiles,
   mergeAdvisorsWithProfiles,
   normalizeName as normalizeAdvisorName,
-  uploadAdvisorAvatar,
 } from './services/advisorProfiles'
+import {
+  DATA_SETTING_KEYS,
+  fetchAppSettings,
+  fetchImportLogs,
+  saveAppSettings,
+} from './services/settingsService'
+import { uploadAdvisorAvatar } from './services/advisorService'
+import { syncDailyRankings, syncMonthlyRankings, syncTeamOverview } from './services/importService'
+import { fetchDailyRankings, fetchMonthlyRankings } from './services/rankingService'
+import { fetchTeamOverview } from './services/teamOverviewService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -130,6 +137,7 @@ const mainTabs = [
 ]
 
 const adminTabs = [
+  { id: 'data', label: 'Dữ liệu Supabase' },
   { id: 'advisors', label: 'Tư vấn viên' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
   { id: 'tbtn', label: 'TBTN / Trưởng nhóm' },
@@ -790,25 +798,6 @@ const getTeamStatus = (team) => {
   return { label: 'Cần tăng tốc', tone: 'speedup' }
 }
 
-function parseCsv(text) {
-  return text
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.split(',').map((cell) => cell.trim()))
-}
-
-function convertCsvRowsToObjects(rows) {
-  if (!rows.length) return []
-  const [headers, ...body] = rows
-  return body.map((row) => {
-    const item = {}
-    headers.forEach((header, index) => {
-      item[header] = row[index] ?? ''
-    })
-    return item
-  })
-}
-
 function parseCsvTextToObjects(text) {
   const workbook = XLSX.read(text, { type: 'string' })
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
@@ -987,7 +976,7 @@ async function fetchTBTNData(url) {
     throw new Error('Sheet chưa bật quyền xem công khai hoặc link không trỏ tới dữ liệu CSV.')
   }
 
-  let rows = []
+  let rows
   try {
     rows = parseTbtnCsvText(text)
   } catch (parseError) {
@@ -1006,8 +995,6 @@ async function fetchTBTNData(url) {
   if (!normalized.length) throw new Error('CSV TBTN không có dòng dữ liệu hợp lệ.')
   return normalized
 }
-
-const fetchTbtnRowsFromUrl = fetchTBTNData
 
 function loadStoredTbtnRows() {
   try {
@@ -1085,6 +1072,12 @@ function App() {
       '',
   )
   const [topDayAdvisors, setTopDayAdvisors] = useState([])
+  const [dataSettings, setDataSettings] = useState({
+    [DATA_SETTING_KEYS.topMonthUrl]: SHEET_CONFIG.topMonth || '',
+    [DATA_SETTING_KEYS.topDayUrl]: SHEET_CONFIG.topDay || '',
+    [DATA_SETTING_KEYS.driveFolderUrl]: '',
+    [DATA_SETTING_KEYS.tbtnUrl]: SHEET_CONFIG.teams || '',
+  })
 
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
@@ -1132,6 +1125,11 @@ function App() {
         if (!isMounted) return
 
         applyRemoteData(remoteData)
+        const remoteSettings = await fetchAppSettings()
+        if (!isMounted) return
+        setDataSettings((current) => ({ ...current, ...remoteSettings }))
+        if (remoteSettings[DATA_SETTING_KEYS.tbtnUrl]) setTbtnSheetUrl(remoteSettings[DATA_SETTING_KEYS.tbtnUrl])
+        if (remoteSettings[DATA_SETTING_KEYS.topDayUrl]) setTopDaySheetUrl(remoteSettings[DATA_SETTING_KEYS.topDayUrl])
 
         hasHydratedSupabase.current = true
       } catch (supabaseError) {
@@ -1205,6 +1203,8 @@ function App() {
         setTbtnSheetUrl={setTbtnSheetUrl}
         topDaySheetUrl={topDaySheetUrl}
         setTopDaySheetUrl={setTopDaySheetUrl}
+        dataSettings={dataSettings}
+        setDataSettings={setDataSettings}
         setTopDayAdvisors={setTopDayAdvisors}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchAdvisors={fetchAdvisors}
@@ -1224,6 +1224,7 @@ function App() {
       tbtnRows={tbtnRows}
       tbtnSheetUrl={tbtnSheetUrl}
       topDaySheetUrl={topDaySheetUrl}
+      dataSettings={dataSettings}
       topDayAdvisors={topDayAdvisors}
       setTopDayAdvisors={setTopDayAdvisors}
       navigate={navigate}
@@ -1253,6 +1254,7 @@ function MainView({
   tbtnRows,
   tbtnSheetUrl,
   topDaySheetUrl,
+  dataSettings,
   topDayAdvisors,
   setTopDayAdvisors,
   navigate,
@@ -1288,13 +1290,45 @@ function MainView({
     const local = (key) => window.localStorage.getItem(key) || ''
     return {
       shared: SHEET_CONFIG.shared || local('autorank_google_sheet_url'),
-      topMonth: SHEET_CONFIG.topMonth || local('autorank_top_thang_url'),
-      topDay: topDaySheetUrl || SHEET_CONFIG.topDay || local(TOP_DAY_URL_STORAGE_KEY) || local(TOP_DAY_LEGACY_URL_STORAGE_KEY),
-      teams: tbtnSheetUrl || local(TBTN_URL_STORAGE_KEY),
+      topMonth: dataSettings?.[DATA_SETTING_KEYS.topMonthUrl] || SHEET_CONFIG.topMonth || local('autorank_top_thang_url'),
+      topDay: dataSettings?.[DATA_SETTING_KEYS.topDayUrl] || topDaySheetUrl || SHEET_CONFIG.topDay || local(TOP_DAY_URL_STORAGE_KEY) || local(TOP_DAY_LEGACY_URL_STORAGE_KEY),
+      teams: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || local(TBTN_URL_STORAGE_KEY),
     }
-  }, [tbtnSheetUrl, topDaySheetUrl])
+  }, [tbtnSheetUrl, topDaySheetUrl, dataSettings])
 
   useEffect(() => {
+    if (isSupabaseConfigured) {
+      let isMounted = true
+      const loadRankingsFromSupabase = async () => {
+        setRemoteRankings((current) => ({
+          month: { ...current.month, loading: true, error: '' },
+          day: { ...current.day, loading: true, error: '' },
+        }))
+        try {
+          const [monthlyRows, dailyRows] = await Promise.all([
+            fetchMonthlyRankings(),
+            fetchDailyRankings(),
+          ])
+          if (!isMounted) return
+          setTopDayAdvisors(dailyRows)
+          setRemoteRankings({
+            month: { rows: monthlyRows, loading: false, error: '' },
+            day: { rows: dailyRows, loading: false, error: '' },
+          })
+        } catch (error) {
+          if (!isMounted) return
+          setRemoteRankings((current) => ({
+            month: { ...current.month, loading: false, error: error?.message ?? 'Không tải được Top tháng.' },
+            day: { ...current.day, loading: false, error: error?.message ?? 'Không tải được Top ngày.' },
+          }))
+        }
+      }
+      loadRankingsFromSupabase()
+      return () => {
+        isMounted = false
+      }
+    }
+
     const loadRankings = async () => {
       const configs = [
         ['month', configuredSheets.topMonth || configuredSheets.shared, 'TopThang'],
@@ -1330,6 +1364,29 @@ function MainView({
   }, [configuredSheets, setTopDayAdvisors])
 
   useEffect(() => {
+    if (isSupabaseConfigured) {
+      let isMounted = true
+      const loadTeamsFromSupabase = async () => {
+        setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
+        try {
+          const rows = await fetchTeamOverview()
+          if (!isMounted) return
+          setTeamOverview({ rows, loading: false, error: '' })
+        } catch (error) {
+          if (!isMounted) return
+          setTeamOverview({
+            rows: tbtnRows,
+            loading: false,
+            error: buildTbtnDataset(tbtnRows).groups.length ? '' : error?.message ?? 'Không tải được TBTN từ Supabase.',
+          })
+        }
+      }
+      loadTeamsFromSupabase()
+      return () => {
+        isMounted = false
+      }
+    }
+
     const url = configuredSheets.teams || configuredSheets.shared
     if (!url) {
       setTeamOverview((current) => ({ ...current, rows: tbtnRows, loading: false, error: '' }))
@@ -1861,6 +1918,7 @@ function RewardProgressBar({ progress }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function TeamCard({ team }) {
   const growth = calculateGrowth(team)
   const reward = calculateRewardProgress(team)
@@ -1943,6 +2001,7 @@ function AvatarCircle({ advisor, size = 'md' }) {
   const [hasImageError, setHasImageError] = useState(false)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasImageError(false)
   }, [avatar])
 
@@ -2176,6 +2235,8 @@ function AdminView({
   setTbtnSheetUrl,
   topDaySheetUrl,
   setTopDaySheetUrl,
+  dataSettings,
+  setDataSettings,
   setTopDayAdvisors,
   setIsAdminLoggedIn,
   fetchAdvisors,
@@ -2185,7 +2246,7 @@ function AdminView({
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  const [activeAdminTab, setActiveAdminTab] = useState('advisors')
+  const [activeAdminTab, setActiveAdminTab] = useState('data')
   const [expandedAdvisorId, setExpandedAdvisorId] = useState(null)
   const [expandedCampaignId, setExpandedCampaignId] = useState(null)
   const [advisorPreview, setAdvisorPreview] = useState([])
@@ -2220,6 +2281,36 @@ function AdminView({
   const [isSavingCampaignDraft, setIsSavingCampaignDraft] = useState(false)
   const [adminToast, setAdminToast] = useState('')
   const [avatarUploadStatus, setAvatarUploadStatus] = useState({})
+  const [dataConfigDraft, setDataConfigDraft] = useState(() => ({
+    [DATA_SETTING_KEYS.topMonthUrl]: dataSettings?.[DATA_SETTING_KEYS.topMonthUrl] || '',
+    [DATA_SETTING_KEYS.topDayUrl]: dataSettings?.[DATA_SETTING_KEYS.topDayUrl] || topDaySheetUrl || '',
+    [DATA_SETTING_KEYS.driveFolderUrl]: dataSettings?.[DATA_SETTING_KEYS.driveFolderUrl] || '',
+    [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || '',
+  }))
+  const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
+  const [importLogs, setImportLogs] = useState([])
+
+  useEffect(() => {
+    setDataConfigDraft((current) => ({
+      ...current,
+      ...dataSettings,
+      [DATA_SETTING_KEYS.topDayUrl]: dataSettings?.[DATA_SETTING_KEYS.topDayUrl] || topDaySheetUrl || current[DATA_SETTING_KEYS.topDayUrl] || '',
+      [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || current[DATA_SETTING_KEYS.tbtnUrl] || '',
+    }))
+  }, [dataSettings, topDaySheetUrl, tbtnSheetUrl])
+
+  const reloadImportLogs = useCallback(async () => {
+    if (!isSupabaseConfigured) return
+    try {
+      setImportLogs(await fetchImportLogs())
+    } catch (logError) {
+      console.error(logError)
+    }
+  }, [])
+
+  useEffect(() => {
+    reloadImportLogs()
+  }, [reloadImportLogs])
 
   const alertSupabaseError = (action, supabaseError) => {
     console.error(action, supabaseError)
@@ -2229,6 +2320,88 @@ function AdminView({
   const showAdminToast = (message) => {
     setAdminToast(message)
     window.setTimeout(() => setAdminToast(''), 2600)
+  }
+
+  const saveDataConfig = async () => {
+    setDataSyncStatus({ loading: 'settings', message: '', error: '' })
+    try {
+      await saveAppSettings(dataConfigDraft)
+      setDataSettings((current) => ({ ...current, ...dataConfigDraft }))
+      setTopDaySheetUrl(dataConfigDraft[DATA_SETTING_KEYS.topDayUrl] || '')
+      setTbtnSheetUrl(dataConfigDraft[DATA_SETTING_KEYS.tbtnUrl] || '')
+      setDataSyncStatus({ loading: '', message: 'Đã lưu cấu hình dữ liệu vào Supabase.', error: '' })
+      showAdminToast('Đã lưu cấu hình dữ liệu')
+    } catch (saveError) {
+      setDataSyncStatus({ loading: '', message: '', error: saveError.message })
+    }
+  }
+
+  const runDataSync = async (type) => {
+    const settings = { ...dataSettings, ...dataConfigDraft }
+    setDataSyncStatus({ loading: type, message: '', error: '' })
+    try {
+      if (type === 'daily') {
+        const result = await syncDailyRankings(settings)
+        setTopDayAdvisors(result.rows)
+        setDataSyncStatus({ loading: '', message: `Đã đồng bộ Top ngày: ${result.rows.length} TVV.`, error: '' })
+      }
+      if (type === 'monthly') {
+        const result = await syncMonthlyRankings(settings)
+        setAdvisors(result.rows.map((row) => ({
+          id: String(row.id || row.advisor_code || row.normalized_name),
+          name: row.advisor_name,
+          team: row.team_name,
+          initials: getInitials(row.advisor_name),
+          revenue: row.revenue,
+          avatar: row.avatar_url || '',
+        })))
+        setDataSyncStatus({ loading: '', message: `Đã đồng bộ Top tháng: ${result.rows.length} TVV.`, error: '' })
+      }
+      if (type === 'tbtn') {
+        const result = await syncTeamOverview(settings)
+        setTbtnRows(result.rows.map((row) => ({
+          id: `team-${row.normalized_team_name}`,
+          stt: row.rank,
+          tenNhom: row.team_name,
+          doanhThu: row.total_revenue,
+          tvvHoatDong: row.active_advisors,
+          soHopDong: row.contract_count,
+          percentOfCompany: row.percent_of_company,
+        })))
+        setDataSyncStatus({ loading: '', message: `Đã đồng bộ TBTN: ${result.rows.length} nhóm.`, error: '' })
+      }
+      if (type === 'all') {
+        const [daily, monthly, tbtn] = await Promise.all([
+          syncDailyRankings(settings),
+          syncMonthlyRankings(settings),
+          syncTeamOverview(settings),
+        ])
+        setTopDayAdvisors(daily.rows)
+        setAdvisors(monthly.rows.map((row) => ({
+          id: String(row.id || row.advisor_code || row.normalized_name),
+          name: row.advisor_name,
+          team: row.team_name,
+          initials: getInitials(row.advisor_name),
+          revenue: row.revenue,
+          avatar: row.avatar_url || '',
+        })))
+        setTbtnRows(tbtn.rows.map((row) => ({
+          id: `team-${row.normalized_team_name}`,
+          stt: row.rank,
+          tenNhom: row.team_name,
+          doanhThu: row.total_revenue,
+          tvvHoatDong: row.active_advisors,
+          soHopDong: row.contract_count,
+          percentOfCompany: row.percent_of_company,
+        })))
+        setDataSyncStatus({ loading: '', message: `Đã đồng bộ tất cả: ${daily.rows.length} Top ngày, ${monthly.rows.length} Top tháng, ${tbtn.rows.length} nhóm.`, error: '' })
+      }
+      await reloadImportLogs()
+      showAdminToast('Đã đồng bộ dữ liệu')
+    } catch (syncError) {
+      setDataSyncStatus({ loading: '', message: '', error: syncError.message })
+      await reloadImportLogs()
+    }
   }
 
   useEffect(() => {
@@ -2883,6 +3056,129 @@ function AdminView({
                 </button>
               ))}
             </div>
+
+            {activeAdminTab === 'data' && (
+              <section className="admin-section">
+                <div className="admin-section__head">
+                  <div>
+                    <h2>Cấu hình dữ liệu Supabase</h2>
+                    <p>Lưu nguồn Sheet/Drive, đồng bộ dữ liệu vào Supabase và xem lịch sử import.</p>
+                  </div>
+                </div>
+
+                <div className="editor-grid">
+                  <label className="full-row">
+                    <span>Google Sheet Top tháng</span>
+                    <input
+                      value={dataConfigDraft[DATA_SETTING_KEYS.topMonthUrl] || ''}
+                      onChange={(event) =>
+                        setDataConfigDraft((current) => ({
+                          ...current,
+                          [DATA_SETTING_KEYS.topMonthUrl]: event.target.value,
+                        }))
+                      }
+                      placeholder="Dán link Google Sheet Top tháng"
+                    />
+                  </label>
+                  <label className="full-row">
+                    <span>Google Sheet Top ngày</span>
+                    <input
+                      value={dataConfigDraft[DATA_SETTING_KEYS.topDayUrl] || ''}
+                      onChange={(event) =>
+                        setDataConfigDraft((current) => ({
+                          ...current,
+                          [DATA_SETTING_KEYS.topDayUrl]: event.target.value,
+                        }))
+                      }
+                      placeholder="Dán link Google Sheet Top ngày"
+                    />
+                  </label>
+                  <label className="full-row">
+                    <span>Google Drive folder PhiBaoHiem</span>
+                    <input
+                      value={dataConfigDraft[DATA_SETTING_KEYS.driveFolderUrl] || ''}
+                      onChange={(event) =>
+                        setDataConfigDraft((current) => ({
+                          ...current,
+                          [DATA_SETTING_KEYS.driveFolderUrl]: event.target.value,
+                        }))
+                      }
+                      placeholder="Dán link folder Drive chứa file PhiBaoHiem"
+                    />
+                  </label>
+                  <label className="full-row">
+                    <span>Google Sheet / nguồn TBTN</span>
+                    <input
+                      value={dataConfigDraft[DATA_SETTING_KEYS.tbtnUrl] || ''}
+                      onChange={(event) =>
+                        setDataConfigDraft((current) => ({
+                          ...current,
+                          [DATA_SETTING_KEYS.tbtnUrl]: event.target.value,
+                        }))
+                      }
+                      placeholder="Dán link Google Sheet hoặc endpoint TBTN"
+                    />
+                  </label>
+                </div>
+
+                <div className="tbtn-config-actions">
+                  <button
+                    type="button"
+                    className="button-primary"
+                    onClick={saveDataConfig}
+                    disabled={dataSyncStatus.loading === 'settings'}
+                  >
+                    {dataSyncStatus.loading === 'settings' ? 'Đang lưu...' : 'Lưu cấu hình'}
+                  </button>
+                  <button type="button" className="button-light" onClick={() => runDataSync('daily')} disabled={Boolean(dataSyncStatus.loading)}>
+                    {dataSyncStatus.loading === 'daily' ? 'Đang đồng bộ...' : 'Đồng bộ Top ngày'}
+                  </button>
+                  <button type="button" className="button-light" onClick={() => runDataSync('monthly')} disabled={Boolean(dataSyncStatus.loading)}>
+                    {dataSyncStatus.loading === 'monthly' ? 'Đang đồng bộ...' : 'Đồng bộ Top tháng'}
+                  </button>
+                  <button type="button" className="button-light" onClick={() => runDataSync('tbtn')} disabled={Boolean(dataSyncStatus.loading)}>
+                    {dataSyncStatus.loading === 'tbtn' ? 'Đang đồng bộ...' : 'Đồng bộ TBTN'}
+                  </button>
+                  <button type="button" className="button-primary" onClick={() => runDataSync('all')} disabled={Boolean(dataSyncStatus.loading)}>
+                    {dataSyncStatus.loading === 'all' ? 'Đang đồng bộ tất cả...' : 'Đồng bộ tất cả'}
+                  </button>
+                </div>
+
+                {dataSyncStatus.error ? <div className="form-error">{dataSyncStatus.error}</div> : null}
+                {dataSyncStatus.message ? <div className="form-success">{dataSyncStatus.message}</div> : null}
+
+                <div className="admin-section__head admin-section__head--compact">
+                  <div>
+                    <h2>Lịch sử import</h2>
+                    <p>
+                      Cập nhật gần nhất:{' '}
+                      {importLogs[0]?.created_at
+                        ? new Date(importLogs[0].created_at).toLocaleString('vi-VN')
+                        : 'Chưa có'}
+                    </p>
+                  </div>
+                  <button type="button" className="button-light" onClick={reloadImportLogs}>
+                    Tải lại
+                  </button>
+                </div>
+
+                <div className="admin-list">
+                  {importLogs.length ? (
+                    importLogs.map((log) => (
+                      <div key={log.id} className="preview-row">
+                        <div className="preview-row__content">
+                          <strong>{log.import_type} - {log.status}</strong>
+                          <span>{new Date(log.created_at).toLocaleString('vi-VN')} - {log.total_rows || 0} dòng</span>
+                          <span>{log.message || log.source_name}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-state">Chưa có lịch sử import.</div>
+                  )}
+                </div>
+              </section>
+            )}
 
             {activeAdminTab === 'advisors' && (
               <section className="admin-section">
