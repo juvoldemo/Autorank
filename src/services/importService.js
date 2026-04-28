@@ -1,12 +1,10 @@
-import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { DATA_SETTING_KEYS, createImportLog, fetchAppSettings } from './settingsService'
-import { fetchAdvisors, mergeRowsWithAdvisorAvatars, normalizeAdvisorName, upsertAdvisors } from './advisorService'
+import { normalizeAdvisorName } from './advisorService'
 import { replaceDailyRankings, replaceMonthlyRankings } from './rankingService'
 import { replaceTeamOverview } from './teamOverviewService'
 
-const EXCLUDED_STATUSES = ['tu choi', 'ycbh het hieu luc', 'tri hoan', 'da cham dut']
-const UNGROUPED_SPECIAL_ADVISOR = normalizeAdvisorName('Lê Thị Mỹ Châu')
+const GOOGLE_SHEET_ERROR = 'Không đọc được Google Sheet: kiểm tra share Anyone with link hoặc tên tab'
 
 const todayIso = () => {
   const date = new Date()
@@ -25,7 +23,7 @@ const normalizeHeader = (value) =>
     .trim()
     .replace(/\s+/g, ' ')
 
-const slugify = (value) => normalizeHeader(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '')
+const slugify = (value) => normalizeHeader(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
 
 const normalizeRevenue = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -38,41 +36,11 @@ const normalizeRevenue = (value) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const getRawValue = (row, aliases, fallback = '') => {
-  if (!row || typeof row !== 'object') return fallback
-  for (const alias of aliases) {
-    if (row[alias] !== undefined && row[alias] !== null && row[alias] !== '') return row[alias]
-  }
-  const entries = Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
-  for (const alias of aliases) {
-    const normalizedAlias = normalizeHeader(alias)
-    const match = entries.find(([key, value]) => key === normalizedAlias && value !== undefined && value !== null && value !== '')
-    if (match) return match[1]
-  }
-  return fallback
+const normalizeInteger = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  const parsed = Number(String(value ?? '').replace(/[^\d-]/g, ''))
+  return Number.isFinite(parsed) ? parsed : 0
 }
-
-const parseDate = (value) => {
-  if (!value) return null
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value
-  if (typeof value === 'number') {
-    const parsed = XLSX.SSF.parse_date_code(value)
-    if (parsed) return new Date(parsed.y, parsed.m - 1, parsed.d)
-  }
-  const raw = String(value).trim()
-  const iso = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
-  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
-  const vn = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/)
-  if (vn) {
-    const year = Number(vn[3].length === 2 ? `20${vn[3]}` : vn[3])
-    return new Date(year, Number(vn[2]) - 1, Number(vn[1]))
-  }
-  const parsed = new Date(raw)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
-const toDateIso = (date) =>
-  date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : ''
 
 const cleanTeamName = (value) =>
   String(value || '')
@@ -82,18 +50,54 @@ const cleanTeamName = (value) =>
     .replace(/\s*\([A-Z]{1,4}\d{2,}.*\)\s*$/i, '')
     .trim()
 
-const parseCsvTextToObjects = (text) => {
-  const parsed = Papa.parse(String(text || '').replace(/^\uFEFF/, ''), {
-    header: true,
-    skipEmptyLines: true,
-  })
-  if (parsed.errors?.length) console.log('CSV parse warnings', parsed.errors)
-  return parsed.data ?? []
+const hasAnyValue = (row) => {
+  if (!row || typeof row !== 'object') return false
+  if (Array.isArray(row.__cells)) {
+    return row.__cells.some((value) => String(value ?? '').trim() !== '')
+  }
+  return Object.values(row).some((value) => String(value ?? '').trim() !== '')
 }
 
-const getGoogleSheetGid = (url) => {
-  const parsedUrl = new URL(String(url || '').trim())
-  return parsedUrl.searchParams.get('gid') || String(parsedUrl.hash || '').match(/gid=(\d+)/)?.[1] || '0'
+const getRawValue = (row, aliases, fallback = '') => {
+  if (!row || typeof row !== 'object') return fallback
+
+  for (const alias of aliases) {
+    if (row[alias] !== undefined && row[alias] !== null && row[alias] !== '') return row[alias]
+  }
+
+  const normalizedEntries = Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeHeader(alias)
+    const match = normalizedEntries.find(
+      ([key, value]) => key === normalizedAlias && value !== undefined && value !== null && value !== '',
+    )
+    if (match) return match[1]
+  }
+
+  return fallback
+}
+
+const getCellValue = (row, index, fallback = '') => {
+  const cells = Array.isArray(row?.__cells) ? row.__cells : []
+  const value = cells[index]
+  return value !== undefined && value !== null && value !== '' ? value : fallback
+}
+
+const parseCsvTextToObjects = (text) => {
+  const parsed = Papa.parse(String(text || '').replace(/^\uFEFF/, ''), {
+    header: false,
+    skipEmptyLines: true,
+  })
+  if (parsed.errors?.length) console.log('[Google Sheet] PapaParse warnings', parsed.errors)
+  const table = parsed.data ?? []
+  const headers = (table[0] ?? []).map((header) => String(header ?? '').trim())
+  return table.slice(1).map((cells) => {
+    const row = { __cells: cells }
+    headers.forEach((header, index) => {
+      if (header) row[header] = cells[index] ?? ''
+    })
+    return row
+  })
 }
 
 const getGoogleSheetId = (url) => {
@@ -102,120 +106,33 @@ const getGoogleSheetId = (url) => {
   return match[1]
 }
 
-const googleSheetCsvUrl = (url) =>
-  `https://docs.google.com/spreadsheets/d/${getGoogleSheetId(url)}/export?format=csv&gid=${getGoogleSheetGid(url)}`
+const googleSheetCsvUrl = (url, sheetName) => {
+  const spreadsheetId = getGoogleSheetId(url)
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`
+}
 
-export async function fetchSheetRows(url) {
-  if (!url?.trim()) throw new Error('Chưa có link nguồn dữ liệu.')
+export async function fetchSheetRows(url, sheetName) {
+  if (!url?.trim()) throw new Error('Chưa có link Google Sheet.')
+
   try {
-    const finalUrl = url.includes('docs.google.com') ? googleSheetCsvUrl(url) : url
+    const finalUrl = url.includes('docs.google.com') ? googleSheetCsvUrl(url, sheetName) : url
+    console.log('[Google Sheet] fetch URL', finalUrl)
+
     const response = await fetch(finalUrl)
-    if (!response.ok) throw new Error(`Nguồn trả về mã lỗi ${response.status}.`)
-    const contentType = response.headers.get('content-type') || ''
-    if (contentType.includes('application/json')) {
-      const json = await response.json()
-      if (Array.isArray(json)) return json
-      if (Array.isArray(json?.data)) return json.data
-      throw new Error('JSON không có mảng dữ liệu.')
-    }
+    if (!response.ok) throw new Error(`Google Sheet returned ${response.status}.`)
+
     const text = await response.text()
-    if (/<!DOCTYPE|<html|Google Docs/i.test(text)) throw new Error('Sheet chưa public hoặc link không trỏ tới dữ liệu CSV.')
-    return parseCsvTextToObjects(text)
+    if (/<!DOCTYPE|<html|Google Docs/i.test(text)) {
+      throw new Error('Sheet is not public or tab name is wrong.')
+    }
+
+    const rows = parseCsvTextToObjects(text).filter(hasAnyValue)
+    console.log('[Google Sheet] raw row count', rows.length)
+    return rows
   } catch (error) {
     console.error('fetchSheetRows error', error)
-    throw new Error(`Không đọc được dữ liệu Sheet/API: ${error.message}`, { cause: error })
+    throw new Error(GOOGLE_SHEET_ERROR, { cause: error })
   }
-}
-
-const extractDriveFolderId = (url) =>
-  String(url || '').match(/folders\/([a-zA-Z0-9-_]+)/)?.[1] ||
-  String(url || '').match(/[?&]id=([a-zA-Z0-9-_]+)/)?.[1] ||
-  String(url || '').trim()
-
-const fetchLatestPhiBaoHiemRows = async (folderUrl) => {
-  const folderId = extractDriveFolderId(folderUrl)
-  if (!folderId) throw new Error('Chưa có Google Drive folder chứa file PhiBaoHiem.')
-  const response = await fetch(`https://drive.google.com/drive/folders/${folderId}`)
-  if (!response.ok) throw new Error(`Không mở được Drive folder. Mã lỗi ${response.status}.`)
-  const html = await response.text()
-  const matches = [...html.matchAll(/\["([a-zA-Z0-9_-]{20,})","(PhiBaoHiem[^"]+)"/g)]
-  const latest = matches
-    .map((match) => ({ id: match[1], name: match[2] }))
-    .sort((a, b) => b.name.localeCompare(a.name, 'vi'))
-    .at(0)
-  if (!latest) throw new Error('Không tìm thấy file có tên bắt đầu bằng PhiBaoHiem trong folder.')
-  const download = await fetch(`https://drive.google.com/uc?export=download&id=${latest.id}`)
-  if (!download.ok) throw new Error(`Không tải được file ${latest.name}.`)
-  const buffer = await download.arrayBuffer()
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
-  const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-  return {
-    sourceName: latest.name,
-    rows: XLSX.utils.sheet_to_json(firstSheet, { defval: '' }),
-  }
-}
-
-const toContractRow = (row) => {
-  const advisorName = String(getRawValue(row, ['Họ tên', 'Họ và tên', 'Tên tư vấn viên', 'Ten tu van vien', 'Ten TVV', 'Tên đại lý', 'Ten dai ly', 'Name'])).trim()
-  const advisorCode = String(getRawValue(row, ['Mã TVV', 'Ma TVV', 'Mã đại lý', 'Ma dai ly', 'advisor_code', 'Code', 'Mã'])).trim()
-  const teamName = cleanTeamName(getRawValue(row, ['Tên nhóm', 'Nhóm', 'Nhom', 'Team', 'Đội', 'Doi', 'Ban nhóm']))
-  const departmentName = cleanTeamName(getRawValue(row, ['Tên ban', 'Ban', 'Department', 'Phòng ban', 'Khoi']))
-  const revenue = normalizeRevenue(getRawValue(row, ['AFYP', 'Tổng AFYP', 'Tong AFYP', 'Doanh thu', 'Revenue'], 0))
-  const status = normalizeHeader(getRawValue(row, ['Tình trạng', 'Tinh trang', 'Trạng thái', 'Trang thai', 'Status']))
-  const paidDate = parseDate(getRawValue(row, ['Ngày thu', 'Ngay thu', 'Ngày nộp phí', 'Ngay nop phi', 'Paid date', 'Issue date']))
-  const contractId = String(getRawValue(row, ['Số hợp đồng', 'So hop dong', 'Mã hồ sơ', 'Ma ho so', 'Policy No', 'contract_id'])).trim()
-  return {
-    advisorName,
-    advisorCode,
-    normalizedName: normalizeAdvisorName(advisorName),
-    teamName: teamName || departmentName,
-    departmentName,
-    revenue,
-    status,
-    paidDate,
-    contractId,
-  }
-}
-
-const validContract = (contract) =>
-  contract.advisorName &&
-  contract.revenue > 0 &&
-  !EXCLUDED_STATUSES.some((status) => contract.status.includes(status))
-
-const groupAdvisorRankings = (contracts, sourceFileName, modeDate) => {
-  const grouped = new Map()
-  contracts.filter(validContract).forEach((contract) => {
-    const key = contract.advisorCode || contract.normalizedName
-    const current = grouped.get(key) ?? {
-      advisor_code: contract.advisorCode || null,
-      advisor_name: contract.advisorName,
-      normalized_name: contract.normalizedName,
-      team_name: contract.teamName || contract.departmentName || null,
-      department_name: contract.departmentName || null,
-      revenue: 0,
-      avatar_url: null,
-      source_file_name: sourceFileName,
-    }
-    current.revenue += contract.revenue
-    if (!current.team_name && contract.teamName) current.team_name = contract.teamName
-    if (!current.department_name && contract.departmentName) current.department_name = contract.departmentName
-    grouped.set(key, current)
-  })
-  return [...grouped.values()]
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 10)
-    .map((row, index) => ({ ...row, ...modeDate, rank: index + 1 }))
-}
-
-const attachAvatarsAndSaveAdvisors = async (rankingRows) => {
-  await upsertAdvisors(rankingRows)
-  const advisors = await fetchAdvisors()
-  return mergeRowsWithAdvisorAvatars(rankingRows, advisors).map((row) => ({
-    ...row,
-    advisor_name: row.advisor_name ?? row.name,
-    team_name: row.team_name ?? row.team,
-    avatar_url: row.avatar_url || row.avatar || null,
-  }))
 }
 
 const logResult = async (log) => {
@@ -226,99 +143,213 @@ const logResult = async (log) => {
   }
 }
 
-export async function syncDailyRankings(settingsOverride = null) {
-  const settings = settingsOverride ?? await fetchAppSettings()
-  const reportDate = todayIso()
+const resolveSyncSettings = async (settingsOverride = null) => {
+  let savedSettings = {}
   try {
-    const sourceUrl = settings[DATA_SETTING_KEYS.driveFolderUrl] || settings[DATA_SETTING_KEYS.topDayUrl]
-    const source = settings[DATA_SETTING_KEYS.driveFolderUrl]
-      ? await fetchLatestPhiBaoHiemRows(sourceUrl)
-      : { sourceName: sourceUrl, rows: await fetchSheetRows(sourceUrl) }
-    const contracts = source.rows.map(toContractRow).filter((row) => toDateIso(row.paidDate) === reportDate)
-    const ranked = groupAdvisorRankings(contracts, source.sourceName, { report_date: reportDate })
-    const withAvatars = await attachAvatarsAndSaveAdvisors(ranked)
-    await replaceDailyRankings(reportDate, withAvatars)
-    await logResult({ import_type: 'daily_rankings', source_name: source.sourceName, status: 'success', total_rows: withAvatars.length, message: `Đã đồng bộ Top ngày ${reportDate}.` })
-    return { rows: withAvatars, reportDate, sourceName: source.sourceName }
+    savedSettings = await fetchAppSettings()
   } catch (error) {
-    await logResult({ import_type: 'daily_rankings', source_name: settings[DATA_SETTING_KEYS.driveFolderUrl] || settings[DATA_SETTING_KEYS.topDayUrl], status: 'failed', message: error.message, total_rows: 0 })
+    console.warn('Không tải được app_settings, dùng cấu hình đang nhập trên màn hình nếu có.', error)
+  }
+  const override = settingsOverride ?? {}
+  return Object.values(DATA_SETTING_KEYS).reduce(
+    (settings, key) => ({
+      ...settings,
+      [key]: String(override[key] ?? '').trim() || String(savedSettings[key] ?? '').trim(),
+    }),
+    {},
+  )
+}
+
+const requireSetting = (settings, key, label) => {
+  const value = String(settings[key] ?? '').trim()
+  if (!value) throw new Error(`Thiếu link ${label}. Hãy nhập và bấm "Lưu cấu hình".`)
+  return value
+}
+
+const toRankingSheetRow = (row, index, config, sourceName, periodFields) => {
+  const advisorName = String(getCellValue(row, config.advisorIndex, getRawValue(row, config.advisorHeaders))).trim()
+  const teamName = cleanTeamName(getCellValue(row, config.teamIndex, getRawValue(row, config.teamHeaders)))
+  const revenue = normalizeRevenue(getCellValue(row, config.revenueIndex, getRawValue(row, config.revenueHeaders)))
+
+  if (!advisorName) return null
+
+  return {
+    ...periodFields,
+    rank: index + 1,
+    advisor_name: advisorName,
+    normalized_name: normalizeAdvisorName(advisorName),
+    advisor_code: null,
+    team_name: teamName || null,
+    department_name: null,
+    revenue,
+    avatar_url: null,
+    source_file_name: sourceName,
+  }
+}
+
+const toTeamOverviewSheetRow = (row, reportDate, totalCompanyRevenue) => {
+  const rank = normalizeInteger(getCellValue(row, 0, getRawValue(row, ['STT'])))
+  const teamName = cleanTeamName(getCellValue(row, 1, getRawValue(row, ['Tên nhóm', 'Ten nhom'])))
+  const normalizedTeamName = normalizeHeader(teamName)
+
+  if (!rank || !teamName) return null
+  if (normalizedTeamName.includes('le thi my chau') || normalizedTeamName.includes('tong toan bo')) return null
+
+  const totalRevenue = normalizeRevenue(getCellValue(row, 2, getRawValue(row, ['Tổng AFYP', 'Tong AFYP'])))
+  const totalAdvisors = normalizeInteger(
+    getCellValue(row, 3, getRawValue(row, ['Số lượng TVV có hợp đồng', 'So luong TVV co hop dong'])),
+  )
+
+  return {
+    report_date: reportDate,
+    team_name: teamName,
+    normalized_team_name: slugify(teamName),
+    total_revenue: totalRevenue,
+    active_advisors: totalAdvisors,
+    contract_count: 0,
+    percent_of_company: totalCompanyRevenue ? Number(((totalRevenue / totalCompanyRevenue) * 100).toFixed(2)) : 0,
+    rank,
+  }
+}
+
+export async function syncDailyRankings(settingsOverride = null) {
+  const settings = await resolveSyncSettings(settingsOverride)
+  const sourceUrl = requireSetting(settings, DATA_SETTING_KEYS.topDayUrl, 'Google Sheet Top ngày')
+  const reportDate = todayIso()
+
+  try {
+    const rawRows = await fetchSheetRows(sourceUrl, 'To10Ngay')
+    const rows = rawRows
+      .map((row, index) =>
+        toRankingSheetRow(
+          row,
+          index,
+          {
+            rankIndex: 0,
+            advisorIndex: 1,
+            teamIndex: 2,
+            revenueIndex: 3,
+            rankHeaders: ['STT', 'stt'],
+            advisorHeaders: ['Tên tư vấn viên', 'Ten tu van vien', 'ten tu van vien'],
+            teamHeaders: ['Nhóm', 'Nhom', 'nhom'],
+            revenueHeaders: ['Doanh thu', 'Doanh Thu', 'doanh thu'],
+          },
+          sourceUrl,
+          { report_date: reportDate },
+        ),
+      )
+      .filter(Boolean)
+
+    console.log('[Top ngày] parsed rows', rows)
+    const withAvatars = rows.map((row) => ({ ...row, avatar_url: row.avatar_url || null, avatar_path: row.avatar_path || null }))
+    const savedRows = await replaceDailyRankings(reportDate, withAvatars)
+    await logResult({
+      import_type: 'daily_rankings',
+      source_name: sourceUrl,
+      status: 'success',
+      total_rows: savedRows.length,
+      message: `Đã đồng bộ Top ngày: ${savedRows.length} dòng.`,
+    })
+    return { rows: savedRows, reportDate, sourceName: sourceUrl }
+  } catch (error) {
+    await logResult({
+      import_type: 'daily_rankings',
+      source_name: sourceUrl,
+      status: 'failed',
+      message: error.message,
+      total_rows: 0,
+    })
     throw error
   }
 }
 
 export async function syncMonthlyRankings(settingsOverride = null) {
-  const settings = settingsOverride ?? await fetchAppSettings()
+  const settings = await resolveSyncSettings(settingsOverride)
+  const sourceUrl = requireSetting(settings, DATA_SETTING_KEYS.topMonthUrl, 'Google Sheet Top tháng')
   const now = new Date()
   const reportMonth = now.getMonth() + 1
   const reportYear = now.getFullYear()
+
   try {
-    const sourceUrl = settings[DATA_SETTING_KEYS.topMonthUrl] || settings[DATA_SETTING_KEYS.driveFolderUrl]
-    const source = sourceUrl === settings[DATA_SETTING_KEYS.driveFolderUrl]
-      ? await fetchLatestPhiBaoHiemRows(sourceUrl)
-      : { sourceName: sourceUrl, rows: await fetchSheetRows(sourceUrl) }
-    const contracts = source.rows
-      .map(toContractRow)
-      .filter((row) => row.paidDate && row.paidDate.getMonth() + 1 === reportMonth && row.paidDate.getFullYear() === reportYear)
-    const ranked = groupAdvisorRankings(contracts, source.sourceName, { report_month: reportMonth, report_year: reportYear })
-    const withAvatars = await attachAvatarsAndSaveAdvisors(ranked)
-    await replaceMonthlyRankings(reportMonth, reportYear, withAvatars)
-    await logResult({ import_type: 'monthly_rankings', source_name: source.sourceName, status: 'success', total_rows: withAvatars.length, message: `Đã đồng bộ Top tháng ${reportMonth}/${reportYear}.` })
-    return { rows: withAvatars, reportMonth, reportYear, sourceName: source.sourceName }
+    const rawRows = await fetchSheetRows(sourceUrl, 'Sheet1')
+    const rows = rawRows
+      .map((row, index) =>
+        toRankingSheetRow(
+          row,
+          index,
+          {
+            rankIndex: 0,
+            advisorIndex: 1,
+            teamIndex: 2,
+            revenueIndex: 3,
+            rankHeaders: ['Hạng', 'Hang', 'hang'],
+            advisorHeaders: ['Họ tên', 'Ho ten', 'ho ten'],
+            teamHeaders: ['Đội', 'Doi', 'doi'],
+            revenueHeaders: ['Doanh thu', 'Doanh Thu', 'doanh thu'],
+          },
+          sourceUrl,
+          { report_date: todayIso(), report_month: reportMonth, report_year: reportYear },
+        ),
+      )
+      .filter(Boolean)
+
+    console.log('[Top tháng] parsed rows', rows)
+    const withAvatars = rows.map((row) => ({ ...row, avatar_url: row.avatar_url || null, avatar_path: row.avatar_path || null }))
+    const savedRows = await replaceMonthlyRankings(reportMonth, reportYear, withAvatars)
+    await logResult({
+      import_type: 'monthly_rankings',
+      source_name: sourceUrl,
+      status: 'success',
+      total_rows: savedRows.length,
+      message: `Đã đồng bộ Top tháng: ${savedRows.length} dòng.`,
+    })
+    return { rows: savedRows, reportMonth, reportYear, sourceName: sourceUrl }
   } catch (error) {
-    await logResult({ import_type: 'monthly_rankings', source_name: settings[DATA_SETTING_KEYS.topMonthUrl], status: 'failed', message: error.message, total_rows: 0 })
+    await logResult({
+      import_type: 'monthly_rankings',
+      source_name: sourceUrl,
+      status: 'failed',
+      message: error.message,
+      total_rows: 0,
+    })
     throw error
   }
 }
 
 export async function syncTeamOverview(settingsOverride = null) {
-  const settings = settingsOverride ?? await fetchAppSettings()
+  const settings = await resolveSyncSettings(settingsOverride)
+  const sourceUrl = requireSetting(settings, DATA_SETTING_KEYS.tbtnUrl, 'Google Sheet TBTN')
   const reportDate = todayIso()
+
   try {
-    const sourceUrl = settings[DATA_SETTING_KEYS.tbtnUrl] || settings[DATA_SETTING_KEYS.topMonthUrl] || settings[DATA_SETTING_KEYS.driveFolderUrl]
-    const source = sourceUrl === settings[DATA_SETTING_KEYS.driveFolderUrl]
-      ? await fetchLatestPhiBaoHiemRows(sourceUrl)
-      : { sourceName: sourceUrl, rows: await fetchSheetRows(sourceUrl) }
-    const contracts = source.rows.map(toContractRow).filter(validContract)
-    let totalCompanyRevenue = 0
-    const teamMap = new Map()
-    contracts.forEach((contract) => {
-      totalCompanyRevenue += contract.revenue
-      const teamName = cleanTeamName(contract.teamName || contract.departmentName)
-      if (!teamName) return
-      const normalizedTeamName = slugify(teamName)
-      if (!normalizedTeamName) return
-      const current = teamMap.get(normalizedTeamName) ?? {
-        report_date: reportDate,
-        team_name: teamName,
-        normalized_team_name: normalizedTeamName,
-        total_revenue: 0,
-        activeAdvisorSet: new Set(),
-        contract_count: 0,
-      }
-      current.total_revenue += contract.revenue
-      current.contract_count += 1
-      if (contract.normalizedName && contract.normalizedName !== UNGROUPED_SPECIAL_ADVISOR) {
-        current.activeAdvisorSet.add(contract.advisorCode || contract.normalizedName)
-      }
-      teamMap.set(normalizedTeamName, current)
-    })
-    const rows = [...teamMap.values()]
-      .sort((a, b) => b.total_revenue - a.total_revenue)
-      .map((row, index) => ({
-        report_date: row.report_date,
-        team_name: row.team_name,
-        normalized_team_name: row.normalized_team_name,
-        total_revenue: row.total_revenue,
-        active_advisors: row.activeAdvisorSet.size,
-        contract_count: row.contract_count,
-        percent_of_company: totalCompanyRevenue ? Number(((row.total_revenue / totalCompanyRevenue) * 100).toFixed(2)) : 0,
-        rank: index + 1,
-      }))
+    const rawRows = await fetchSheetRows(sourceUrl, 'BaoCaoNhom')
+    const preliminaryRows = rawRows
+      .map((row) => toTeamOverviewSheetRow(row, reportDate, 0))
+      .filter(Boolean)
+    const totalCompanyRevenue = preliminaryRows.reduce((total, row) => total + Number(row.total_revenue || 0), 0)
+    const rows = preliminaryRows.map((row) => ({
+      ...row,
+      percent_of_company: totalCompanyRevenue ? Number(((row.total_revenue / totalCompanyRevenue) * 100).toFixed(2)) : 0,
+    }))
+
+    console.log('[TBTN] parsed rows', rows)
     await replaceTeamOverview(reportDate, rows)
-    await logResult({ import_type: 'team_overview', source_name: source.sourceName, status: 'success', total_rows: rows.length, message: `Đã đồng bộ TBTN. Tổng doanh thu công ty: ${totalCompanyRevenue.toLocaleString('vi-VN')}.` })
-    return { rows, reportDate, sourceName: source.sourceName, totalCompanyRevenue }
+    await logResult({
+      import_type: 'team_overview',
+      source_name: sourceUrl,
+      status: 'success',
+      total_rows: rows.length,
+      message: `Đã đồng bộ TBTN: ${rows.length} nhóm.`,
+    })
+    return { rows, reportDate, sourceName: sourceUrl, totalCompanyRevenue }
   } catch (error) {
-    await logResult({ import_type: 'team_overview', source_name: settings[DATA_SETTING_KEYS.tbtnUrl], status: 'failed', message: error.message, total_rows: 0 })
+    await logResult({
+      import_type: 'team_overview',
+      source_name: sourceUrl,
+      status: 'failed',
+      message: error.message,
+      total_rows: 0,
+    })
     throw error
   }
 }

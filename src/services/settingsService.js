@@ -10,41 +10,72 @@ const ensureSupabase = () => {
 }
 
 export const DATA_SETTING_KEYS = {
-  topMonthUrl: 'top_month_sheet_url',
-  topDayUrl: 'top_day_sheet_url',
-  driveFolderUrl: 'phibaohiem_drive_folder_url',
-  tbtnUrl: 'tbtn_sheet_url',
+  topMonthUrl: 'google_sheet_monthly_url',
+  topDayUrl: 'google_sheet_daily_url',
+  tbtnUrl: 'google_sheet_tbtn_url',
 }
 
-export async function fetchAppSettings() {
+const LEGACY_DATA_SETTING_KEYS = {
+  [DATA_SETTING_KEYS.topMonthUrl]: 'top_month_sheet_url',
+  [DATA_SETTING_KEYS.topDayUrl]: 'top_day_sheet_url',
+  [DATA_SETTING_KEYS.tbtnUrl]: 'tbtn_sheet_url',
+}
+
+const normalizeSettings = (rows) => {
+  const settings = (rows ?? []).reduce((items, row) => ({ ...items, [row.key]: row.value ?? '' }), {})
+  Object.entries(LEGACY_DATA_SETTING_KEYS).forEach(([currentKey, legacyKey]) => {
+    if (!settings[currentKey] && settings[legacyKey]) settings[currentKey] = settings[legacyKey]
+  })
+  return settings
+}
+
+let settingsCache = {}
+
+export async function loadSettingsFromSupabase() {
   try {
     ensureSupabase()
     const { data, error } = await supabase.from(SETTINGS_TABLE).select('*')
     if (error) throw error
-    return (data ?? []).reduce((items, row) => ({ ...items, [row.key]: row.value ?? '' }), {})
+    settingsCache = normalizeSettings(data)
+    return settingsCache
   } catch (error) {
-    console.error('fetchAppSettings error', error)
+    console.error('loadSettingsFromSupabase error', error)
     throw new Error(`Không tải được cấu hình dữ liệu: ${error.message}`, { cause: error })
   }
 }
 
-export async function saveAppSettings(settings) {
+export const fetchAppSettings = loadSettingsFromSupabase
+
+export async function saveSettingsToSupabase(settings) {
   try {
     ensureSupabase()
-    const rows = Object.entries(settings).map(([key, value]) => ({
+    const rows = Object.entries(settings)
+      .filter(([key]) => Object.values(DATA_SETTING_KEYS).includes(key))
+      .map(([key, value]) => ({
       key,
       value: String(value ?? '').trim(),
+      updated_at: new Date().toISOString(),
     }))
     const { data, error } = await supabase
       .from(SETTINGS_TABLE)
       .upsert(rows, { onConflict: 'key' })
       .select('*')
     if (error) throw error
+    settingsCache = { ...settingsCache, ...normalizeSettings(data) }
     return data ?? []
   } catch (error) {
-    console.error('saveAppSettings error', error)
+    console.error('saveSettingsToSupabase error', error)
     throw new Error(`Không lưu được cấu hình dữ liệu: ${error.message}`, { cause: error })
   }
+}
+
+export const saveAppSettings = saveSettingsToSupabase
+
+export async function getSettingValue(key) {
+  if (!settingsCache[key]) {
+    await loadSettingsFromSupabase()
+  }
+  return settingsCache[key] ?? ''
 }
 
 export async function fetchImportLogs(limit = 20) {

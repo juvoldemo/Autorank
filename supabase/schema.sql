@@ -8,7 +8,7 @@ create table if not exists public.advisors (
   name text not null default '',
   team text not null default '',
   initials text not null default 'TV',
-  revenue bigint not null default 0,
+  revenue numeric default 0,
   note text not null default '',
   avatar text not null default '',
   active_status boolean not null default true,
@@ -19,7 +19,7 @@ create table if not exists public.advisors (
 alter table public.advisors alter column id set default gen_random_uuid()::text;
 alter table public.advisors add column if not exists name text not null default '';
 alter table public.advisors add column if not exists team text not null default '';
-alter table public.advisors add column if not exists revenue bigint not null default 0;
+alter table public.advisors add column if not exists revenue numeric default 0;
 alter table public.advisors add column if not exists note text not null default '';
 alter table public.advisors add column if not exists avatar text not null default '';
 alter table public.advisors add column if not exists active_status boolean not null default true;
@@ -30,6 +30,7 @@ alter table public.advisors add column if not exists team_name text;
 alter table public.advisors add column if not exists department_name text;
 alter table public.advisors add column if not exists normalized_name text;
 alter table public.advisors add column if not exists avatar_url text;
+alter table public.advisors add column if not exists avatar_path text;
 alter table public.advisors add column if not exists created_at timestamptz not null default now();
 alter table public.advisors add column if not exists updated_at timestamptz not null default now();
 
@@ -52,12 +53,13 @@ create index if not exists advisors_normalized_name_idx
 on public.advisors (normalized_name);
 
 create table if not exists public.app_settings (
-  id uuid primary key default gen_random_uuid(),
-  key text not null unique,
-  value text not null default '',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  key text primary key,
+  value text,
+  updated_at timestamptz default now()
 );
+
+alter table public.app_settings add column if not exists value text;
+alter table public.app_settings add column if not exists updated_at timestamptz default now();
 
 create table if not exists public.daily_rankings (
   id uuid primary key default gen_random_uuid(),
@@ -70,6 +72,7 @@ create table if not exists public.daily_rankings (
   department_name text,
   revenue numeric not null default 0,
   avatar_url text,
+  avatar_path text,
   source_file_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -85,6 +88,7 @@ create table if not exists public.monthly_rankings (
   id uuid primary key default gen_random_uuid(),
   report_month integer not null check (report_month between 1 and 12),
   report_year integer not null,
+  report_date date default current_date,
   rank integer not null,
   advisor_name text not null,
   normalized_name text not null,
@@ -93,6 +97,7 @@ create table if not exists public.monthly_rankings (
   department_name text,
   revenue numeric not null default 0,
   avatar_url text,
+  avatar_path text,
   source_file_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -100,6 +105,15 @@ create table if not exists public.monthly_rankings (
 
 create unique index if not exists monthly_rankings_period_rank_uidx
 on public.monthly_rankings (report_year, report_month, rank);
+
+alter table public.daily_rankings add column if not exists avatar_url text;
+alter table public.daily_rankings add column if not exists avatar_path text;
+alter table public.daily_rankings add column if not exists normalized_name text;
+
+alter table public.monthly_rankings add column if not exists report_date date default current_date;
+alter table public.monthly_rankings add column if not exists avatar_url text;
+alter table public.monthly_rankings add column if not exists avatar_path text;
+alter table public.monthly_rankings add column if not exists normalized_name text;
 
 create index if not exists monthly_rankings_period_idx
 on public.monthly_rankings (report_year desc, report_month desc);

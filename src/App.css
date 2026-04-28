@@ -3840,9 +3840,38 @@ body {
 }
 
 .tbtn-back {
-  width: fit-content;
-  min-height: 38px;
-  padding: 0 13px 0 9px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--bv-blue-900);
+}
+
+.tbtn-back:hover {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink-800);
+}
+
+.tbtn-back .button-icon,
+.tbtn-back .round-icon {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: currentColor;
+}
+
+.tbtn-back svg {
+  width: 30px;
+  height: 30px;
+  stroke-width: 1.8;
 }
 
 .tbtn-header h1 {
@@ -4243,11 +4272,17 @@ body {
 
 .tbtn-mini-stats > div {
   min-width: 0;
+  min-height: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding: 14px;
   border: 1px solid rgba(130, 153, 185, 0.16);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 10px 24px rgba(15, 42, 88, 0.07);
+  text-align: center;
 }
 
 .tbtn-mini-stats span,
@@ -4260,6 +4295,7 @@ body {
   font-size: 12px;
   font-weight: 850;
   line-height: 1.25;
+  text-align: center;
 }
 
 .tbtn-mini-stats strong {
@@ -4268,6 +4304,7 @@ body {
   font-size: 28px;
   line-height: 1;
   font-weight: 950;
+  text-align: center;
 }
 
 .tbtn-section-header {

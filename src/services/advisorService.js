@@ -11,7 +11,7 @@ const ensureSupabase = () => {
   }
 }
 
-export const normalizeAdvisorName = (name) =>
+export const normalizeName = (name) =>
   String(name || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -21,6 +21,8 @@ export const normalizeAdvisorName = (name) =>
     .replace(/[^a-z0-9\s]/g, ' ')
     .trim()
     .replace(/\s+/g, ' ')
+
+export const normalizeAdvisorName = normalizeName
 
 const slugify = (value) =>
   normalizeAdvisorName(value).replace(/\s+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
@@ -64,14 +66,13 @@ const compressAvatarImage = async (file) => {
 export const toAdvisorRecord = (advisor = {}) => {
   const advisorName = String(advisor.advisor_name ?? advisor.advisorName ?? advisor.name ?? '').trim()
   const advisorCode = getAdvisorCode(advisor) || null
-  const normalizedName = normalizeAdvisorName(advisor.normalized_name ?? advisorName)
+  const normalizedName = normalizeName(advisorName)
   return {
     advisor_code: advisorCode,
     advisor_name: advisorName,
     team_name: String(advisor.team_name ?? advisor.teamName ?? advisor.team ?? '').trim() || null,
-    department_name: String(advisor.department_name ?? advisor.departmentName ?? advisor.department ?? '').trim() || null,
     normalized_name: normalizedName,
-    avatar_url: advisor.avatar_url ?? advisor.avatarUrl ?? advisor.avatar ?? null,
+    revenue: Number(advisor.revenue ?? 0),
   }
 }
 

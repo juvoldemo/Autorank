@@ -22,23 +22,21 @@ import {
   fetchAdvisorProfiles,
   mergeAdvisorsWithProfiles,
   normalizeName as normalizeAdvisorName,
+  uploadAdvisorAvatar,
 } from './services/advisorProfiles'
 import {
   DATA_SETTING_KEYS,
-  fetchAppSettings,
   fetchImportLogs,
-  saveAppSettings,
+  loadSettingsFromSupabase,
+  saveSettingsToSupabase,
 } from './services/settingsService'
-import { uploadAdvisorAvatar } from './services/advisorService'
 import { syncDailyRankings, syncMonthlyRankings, syncTeamOverview } from './services/importService'
 import { fetchDailyRankings, fetchMonthlyRankings } from './services/rankingService'
-import { fetchTeamOverview } from './services/teamOverviewService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
 
 const SUPABASE_TABLES = {
-  advisors: 'advisors',
   campaigns: 'competitions',
   campaignRankings: 'campaign_rankings',
   banners: 'page_banners',
@@ -138,9 +136,7 @@ const mainTabs = [
 
 const adminTabs = [
   { id: 'data', label: 'Dữ liệu Supabase' },
-  { id: 'advisors', label: 'Tư vấn viên' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
-  { id: 'tbtn', label: 'TBTN / Trưởng nhóm' },
   { id: 'banners', label: 'Banner' },
 ]
 
@@ -305,18 +301,6 @@ const createCampaignDraft = () => ({
   published: true,
 })
 
-const toAdvisorRow = (advisor, index = 0) => ({
-  id: String(advisor.id || `advisor-${slugify(advisor.name) || crypto.randomUUID()}`),
-  name: advisor.name ?? '',
-  team: advisor.team ?? '',
-  initials: advisor.initials ?? getInitials(advisor.name),
-  revenue: normalizeRevenue(advisor.revenue),
-  note: advisor.note ?? '',
-  avatar: advisor.avatar ?? '',
-  active_status: advisor.active_status ?? advisor.activeStatus ?? true,
-  sort_order: index,
-})
-
 const fromAdvisorRow = (row) => ({
   id: row.id,
   name: row.name ?? '',
@@ -403,24 +387,6 @@ const replaceTableRows = async (table, idColumn, rows) => {
   if (error) throw error
 }
 
-const sortAdvisorRowsFromSupabase = (rows) => {
-  const advisors = safeArray(rows)
-  const allSortOrderZero = advisors.length > 0 && advisors.every((row) => Number(row.sort_order || 0) === 0)
-  if (allSortOrderZero) return sortByRevenueDesc(advisors)
-  return [...advisors].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-}
-
-const fetchAdvisorRows = async () => {
-  console.log('loading advisors from supabase')
-  const { data, error } = await supabase
-    .from('advisors')
-    .select('*')
-    .order('sort_order', { ascending: true })
-
-  if (error) throw error
-  return sortAdvisorRowsFromSupabase(data ?? [])
-}
-
 const fetchCompetitionRows = async () => {
   console.log('loading competitions from supabase')
   const { data, error } = await supabase
@@ -433,10 +399,8 @@ const fetchCompetitionRows = async () => {
 }
 
 const loadSupabaseData = async () => {
-  const [advisorRows, campaignRows, profiles, rankingsResult, bannersResult] = await Promise.all([
-    fetchAdvisorRows(),
+  const [campaignRows, rankingsResult, bannersResult] = await Promise.all([
     fetchCompetitionRows(),
-    fetchAdvisorProfiles(),
     supabase
       .from(SUPABASE_TABLES.campaignRankings)
       .select('*')
@@ -451,26 +415,18 @@ const loadSupabaseData = async () => {
   console.log('Loaded competitions from Supabase', campaignRows)
 
   return {
-    advisors: mergeAdvisorsWithProfiles(advisorRows.map(fromAdvisorRow), profiles),
+    advisors: [],
     campaigns: campaignRows.map(fromCampaignRow),
-    campaignRankings: Object.fromEntries(
-      Object.entries(fromCampaignRankingRows(rankingsResult.data)).map(([campaignId, rows]) => [
-        campaignId,
-        mergeAdvisorsWithProfiles(rows, profiles),
-      ]),
-    ),
+    campaignRankings: fromCampaignRankingRows(rankingsResult.data),
     banners: fromBannerRows(bannersResult.data),
     isEmpty:
-      !advisorRows.length &&
       !campaignRows.length &&
       !rankingsResult.data.length &&
       !bannersResult.data.length,
   }
 }
 
-const saveSupabaseData = async ({ advisors, campaignRankings, banners }) => {
-  await replaceTableRows(SUPABASE_TABLES.advisors, 'id', advisors.map(toAdvisorRow))
-
+const saveSupabaseData = async ({ campaignRankings, banners }) => {
   const rankingRows = Object.entries(campaignRankings).flatMap(([campaignId, rows]) =>
     safeArray(rows).map((advisor, index) => toCampaignRankingRow(campaignId, advisor, index)),
   )
@@ -481,32 +437,6 @@ const saveSupabaseData = async ({ advisors, campaignRankings, banners }) => {
     'page_id',
     Object.entries(normalizeBanners(banners)).map(toBannerRow),
   )
-}
-
-const saveAdvisorsToSupabase = async (advisors) => {
-  if (!isSupabaseConfigured) {
-    throw new Error('Thiếu cấu hình Supabase. Không thể lưu danh sách tư vấn viên.')
-  }
-
-  const rows = safeArray(advisors).map(toAdvisorRow)
-  if (!rows.length) {
-    throw new Error('Không có dữ liệu tư vấn viên hợp lệ để lưu.')
-  }
-
-  console.log('saving advisors to supabase', rows)
-  const { data, error } = await supabase
-    .from('advisors')
-    .upsert(rows, { onConflict: 'id' })
-    .select('*')
-
-  if (error) {
-    console.error('supabase advisors upsert error', error)
-    throw error
-  }
-
-  console.log(`supabase advisors upsert success: saved ${data?.length ?? rows.length} rows`, data)
-  window.alert('Đã lưu vào Supabase')
-  return data
 }
 
 const saveCompetitionToSupabase = async (competition) => {
@@ -1060,8 +990,8 @@ function App() {
     return defaults && typeof defaults === 'object' ? defaults : defaultCampaignRankings
   })
   const [banners, setBanners] = useState(() => normalizeBanners(defaultBanners))
-  const [tbtnRows, setTbtnRows] = useState(() => loadStoredTbtnRows())
-  const [tbtnSheetUrl, setTbtnSheetUrl] = useState(
+  const [tbtnRows] = useState(() => loadStoredTbtnRows())
+  const [tbtnSheetUrl] = useState(
     () => SHEET_CONFIG.teams || window.localStorage.getItem(TBTN_URL_STORAGE_KEY) || '',
   )
   const [topDaySheetUrl, setTopDaySheetUrl] = useState(
@@ -1073,10 +1003,9 @@ function App() {
   )
   const [topDayAdvisors, setTopDayAdvisors] = useState([])
   const [dataSettings, setDataSettings] = useState({
-    [DATA_SETTING_KEYS.topMonthUrl]: SHEET_CONFIG.topMonth || '',
+    [DATA_SETTING_KEYS.topMonthUrl]: SHEET_CONFIG.topMonth || window.localStorage.getItem('autorank_top_thang_url') || '',
     [DATA_SETTING_KEYS.topDayUrl]: SHEET_CONFIG.topDay || '',
-    [DATA_SETTING_KEYS.driveFolderUrl]: '',
-    [DATA_SETTING_KEYS.tbtnUrl]: SHEET_CONFIG.teams || '',
+    [DATA_SETTING_KEYS.tbtnUrl]: SHEET_CONFIG.teams || window.localStorage.getItem(TBTN_URL_STORAGE_KEY) || '',
   })
 
   const applyRemoteData = useCallback((remoteData) => {
@@ -1105,14 +1034,6 @@ function App() {
     return remoteCampaigns
   }, [])
 
-  const fetchAdvisors = useCallback(async () => {
-    if (!isSupabaseConfigured) return []
-    const [rows, profiles] = await Promise.all([fetchAdvisorRows(), fetchAdvisorProfiles()])
-    const remoteAdvisors = mergeAdvisorsWithProfiles(rows.map(fromAdvisorRow), profiles)
-    setAdvisors((current) => (rowsEqual(current, remoteAdvisors) ? current : remoteAdvisors))
-    return remoteAdvisors
-  }, [])
-
   useEffect(() => {
     if (!isSupabaseConfigured) return undefined
 
@@ -1125,10 +1046,9 @@ function App() {
         if (!isMounted) return
 
         applyRemoteData(remoteData)
-        const remoteSettings = await fetchAppSettings()
+        const remoteSettings = await loadSettingsFromSupabase()
         if (!isMounted) return
         setDataSettings((current) => ({ ...current, ...remoteSettings }))
-        if (remoteSettings[DATA_SETTING_KEYS.tbtnUrl]) setTbtnSheetUrl(remoteSettings[DATA_SETTING_KEYS.tbtnUrl])
         if (remoteSettings[DATA_SETTING_KEYS.topDayUrl]) setTopDaySheetUrl(remoteSettings[DATA_SETTING_KEYS.topDayUrl])
 
         hasHydratedSupabase.current = true
@@ -1148,7 +1068,6 @@ function App() {
 
     const channel = supabase
       .channel('autorank-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.advisors }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.campaigns }, scheduleReload)
       .on(
         'postgres_changes',
@@ -1156,7 +1075,6 @@ function App() {
         scheduleReload,
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_TABLES.banners }, scheduleReload)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'advisor_profiles' }, scheduleReload)
       .subscribe()
 
     return () => {
@@ -1189,7 +1107,6 @@ function App() {
   if (pathname === '/admin') {
     return (
       <AdminView
-        advisors={advisors}
         campaigns={campaigns}
         campaignRankings={campaignRankings}
         banners={banners}
@@ -1197,17 +1114,13 @@ function App() {
         setAdvisors={setAdvisors}
         setCampaignRankings={setCampaignRankings}
         setBanners={setBanners}
-        tbtnRows={tbtnRows}
-        setTbtnRows={setTbtnRows}
         tbtnSheetUrl={tbtnSheetUrl}
-        setTbtnSheetUrl={setTbtnSheetUrl}
         topDaySheetUrl={topDaySheetUrl}
         setTopDaySheetUrl={setTopDaySheetUrl}
         dataSettings={dataSettings}
         setDataSettings={setDataSettings}
         setTopDayAdvisors={setTopDayAdvisors}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
-        fetchAdvisors={fetchAdvisors}
         fetchCompetitions={fetchCompetitions}
         navigate={navigate}
       />
@@ -1364,29 +1277,6 @@ function MainView({
   }, [configuredSheets, setTopDayAdvisors])
 
   useEffect(() => {
-    if (isSupabaseConfigured) {
-      let isMounted = true
-      const loadTeamsFromSupabase = async () => {
-        setTeamOverview((current) => ({ ...current, loading: true, error: '' }))
-        try {
-          const rows = await fetchTeamOverview()
-          if (!isMounted) return
-          setTeamOverview({ rows, loading: false, error: '' })
-        } catch (error) {
-          if (!isMounted) return
-          setTeamOverview({
-            rows: tbtnRows,
-            loading: false,
-            error: buildTbtnDataset(tbtnRows).groups.length ? '' : error?.message ?? 'Không tải được TBTN từ Supabase.',
-          })
-        }
-      }
-      loadTeamsFromSupabase()
-      return () => {
-        isMounted = false
-      }
-    }
-
     const url = configuredSheets.teams || configuredSheets.shared
     if (!url) {
       setTeamOverview((current) => ({ ...current, rows: tbtnRows, loading: false, error: '' }))
@@ -1632,7 +1522,7 @@ function BangVangTab({
               <div className="card-list daily-ranking-list">
                 {advisors.map((advisor, index) => (
                   <DailyRankingCard
-                    key={advisor.id}
+                    key={advisor.id || `${advisor.normalized_name || advisor.name || 'advisor'}-${index}`}
                     advisor={advisor}
                     rank={index + 1}
                     delay={index * 60}
@@ -1647,11 +1537,11 @@ function BangVangTab({
                   <PodiumCard advisor={podium[2]} rank={3} delay={160} />
                 </div>
 
-                <div className="section-title">B?ng x?p h?ng ti?p theo</div>
+                <div className="section-title">Bảng xếp hạng tiếp theo</div>
                 <div className="card-list">
                   {rankingRows.map((advisor, index) => (
                     <RankingCard
-                      key={advisor.id}
+                      key={advisor.id || `${advisor.normalized_name || advisor.name || 'advisor'}-${index}`}
                       advisor={advisor}
                       rank={index + 4}
                       delay={240 + index * 80}
@@ -1790,6 +1680,9 @@ function HiddenAdminEntry({ onAdminAccess }) {
 
 function TeamOverviewPage({ teams, isLoading, error, onBack }) {
   const { groups, totalRow } = buildTbtnDataset(teams)
+  const activeTeams = groups.filter((team) =>
+    normalizeRevenue(team.total_revenue ?? team.totalRevenue ?? team.doanhThu) > 0
+  )
   const totalCompanyRevenue = totalRow?.doanhThu ?? groups.reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
   const totalActiveAdvisors = groups.reduce((sum, team) => sum + normalizeInteger(team.tvvHoatDong), 0)
   const hasGroups = groups.length > 0
@@ -1803,23 +1696,19 @@ function TeamOverviewPage({ teams, isLoading, error, onBack }) {
           <span className="round-icon button-icon">
             <ChevronLeft size={18} />
           </span>
-          Quay lại
         </button>
-        <div>
-          <h1>TBTN - Tổng quan nhóm</h1>
-        </div>
       </div>
 
       <div className="screen-body tbtn-body">
         <section className="tbtn-hero-card">
-          <span>Tổng doanh thu toàn công ty</span>
+          <span>Doanh thu</span>
           <strong>{formatTbtnMoney(totalCompanyRevenue)}</strong>
         </section>
 
         <div className="tbtn-mini-stats">
           <div>
             <span>Nhóm</span>
-            <strong>{groups.length}</strong>
+            <strong>{activeTeams.length}</strong>
           </div>
           <div>
             <span>TVV có hợp đồng</span>
@@ -1837,7 +1726,6 @@ function TeamOverviewPage({ teams, isLoading, error, onBack }) {
           <section className="tbtn-list-section">
             <div className="tbtn-section-header">
               <h2>Danh sách nhóm</h2>
-              <span>{groups.length} nhóm</span>
             </div>
             <div className="tbtn-group-list">
               {groups.map((group, index) => (
@@ -2221,25 +2109,20 @@ function ModalShell({ title, children, onClose }) {
 }
 
 function AdminView({
-  advisors,
   campaigns,
   campaignRankings,
   banners,
-  tbtnRows,
   isAdminLoggedIn,
   setAdvisors,
   setCampaignRankings,
   setBanners,
-  setTbtnRows,
   tbtnSheetUrl,
-  setTbtnSheetUrl,
   topDaySheetUrl,
   setTopDaySheetUrl,
   dataSettings,
   setDataSettings,
   setTopDayAdvisors,
   setIsAdminLoggedIn,
-  fetchAdvisors,
   fetchCompetitions,
   navigate,
 }) {
@@ -2247,26 +2130,7 @@ function AdminView({
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [activeAdminTab, setActiveAdminTab] = useState('data')
-  const [expandedAdvisorId, setExpandedAdvisorId] = useState(null)
   const [expandedCampaignId, setExpandedCampaignId] = useState(null)
-  const [advisorPreview, setAdvisorPreview] = useState([])
-  const [advisorPreviewSource, setAdvisorPreviewSource] = useState('')
-  const [advisorRemoteUrl, setAdvisorRemoteUrl] = useState('')
-  const [advisorImportError, setAdvisorImportError] = useState('')
-  const [advisorImportMessage, setAdvisorImportMessage] = useState('')
-  const [topDayImportState, setTopDayImportState] = useState({
-    remoteUrl: topDaySheetUrl || '',
-    preview: [],
-    error: '',
-    message: '',
-  })
-  const [tbtnImportState, setTbtnImportState] = useState({
-    remoteUrl: tbtnSheetUrl || '',
-    preview: [],
-    source: '',
-    error: '',
-    message: '',
-  })
   const [campaignImportState, setCampaignImportState] = useState({})
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false)
   const [campaignDraft, setCampaignDraft] = useState(() => createCampaignDraft())
@@ -2284,20 +2148,54 @@ function AdminView({
   const [dataConfigDraft, setDataConfigDraft] = useState(() => ({
     [DATA_SETTING_KEYS.topMonthUrl]: dataSettings?.[DATA_SETTING_KEYS.topMonthUrl] || '',
     [DATA_SETTING_KEYS.topDayUrl]: dataSettings?.[DATA_SETTING_KEYS.topDayUrl] || topDaySheetUrl || '',
-    [DATA_SETTING_KEYS.driveFolderUrl]: dataSettings?.[DATA_SETTING_KEYS.driveFolderUrl] || '',
     [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || '',
   }))
   const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
   const [importLogs, setImportLogs] = useState([])
 
   useEffect(() => {
+    if (!adminTabs.some((tab) => tab.id === activeAdminTab)) {
+      setActiveAdminTab('data')
+    }
+  }, [activeAdminTab])
+
+  useEffect(() => {
     setDataConfigDraft((current) => ({
       ...current,
       ...dataSettings,
+      [DATA_SETTING_KEYS.topMonthUrl]: dataSettings?.[DATA_SETTING_KEYS.topMonthUrl] || current[DATA_SETTING_KEYS.topMonthUrl] || '',
       [DATA_SETTING_KEYS.topDayUrl]: dataSettings?.[DATA_SETTING_KEYS.topDayUrl] || topDaySheetUrl || current[DATA_SETTING_KEYS.topDayUrl] || '',
       [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || current[DATA_SETTING_KEYS.tbtnUrl] || '',
     }))
   }, [dataSettings, topDaySheetUrl, tbtnSheetUrl])
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return undefined
+    let isMounted = true
+
+    const loadSavedSettings = async () => {
+      try {
+        const savedSettings = await loadSettingsFromSupabase()
+        if (!isMounted) return
+        setDataSettings((current) => ({ ...current, ...savedSettings }))
+        setDataConfigDraft((current) => ({
+          ...current,
+          ...savedSettings,
+          [DATA_SETTING_KEYS.topMonthUrl]: savedSettings[DATA_SETTING_KEYS.topMonthUrl] || current[DATA_SETTING_KEYS.topMonthUrl] || '',
+          [DATA_SETTING_KEYS.topDayUrl]: savedSettings[DATA_SETTING_KEYS.topDayUrl] || current[DATA_SETTING_KEYS.topDayUrl] || '',
+          [DATA_SETTING_KEYS.tbtnUrl]: savedSettings[DATA_SETTING_KEYS.tbtnUrl] || current[DATA_SETTING_KEYS.tbtnUrl] || '',
+        }))
+        if (savedSettings[DATA_SETTING_KEYS.topDayUrl]) setTopDaySheetUrl(savedSettings[DATA_SETTING_KEYS.topDayUrl])
+      } catch (settingsError) {
+        console.error('Không tải được cấu hình link từ Supabase', settingsError)
+      }
+    }
+
+    loadSavedSettings()
+    return () => {
+      isMounted = false
+    }
+  }, [setDataSettings, setTopDaySheetUrl])
 
   const reloadImportLogs = useCallback(async () => {
     if (!isSupabaseConfigured) return
@@ -2325,77 +2223,58 @@ function AdminView({
   const saveDataConfig = async () => {
     setDataSyncStatus({ loading: 'settings', message: '', error: '' })
     try {
-      await saveAppSettings(dataConfigDraft)
+      await saveSettingsToSupabase(dataConfigDraft)
       setDataSettings((current) => ({ ...current, ...dataConfigDraft }))
       setTopDaySheetUrl(dataConfigDraft[DATA_SETTING_KEYS.topDayUrl] || '')
-      setTbtnSheetUrl(dataConfigDraft[DATA_SETTING_KEYS.tbtnUrl] || '')
-      setDataSyncStatus({ loading: '', message: 'Đã lưu cấu hình dữ liệu vào Supabase.', error: '' })
-      showAdminToast('Đã lưu cấu hình dữ liệu')
+      window.localStorage.setItem('autorank_top_thang_url', dataConfigDraft[DATA_SETTING_KEYS.topMonthUrl] || '')
+      window.localStorage.setItem(TOP_DAY_URL_STORAGE_KEY, dataConfigDraft[DATA_SETTING_KEYS.topDayUrl] || '')
+      window.localStorage.setItem(TBTN_URL_STORAGE_KEY, dataConfigDraft[DATA_SETTING_KEYS.tbtnUrl] || '')
+      setDataSyncStatus({ loading: '', message: 'Đã lưu cấu hình', error: '' })
+      showAdminToast('Đã lưu cấu hình')
     } catch (saveError) {
       setDataSyncStatus({ loading: '', message: '', error: saveError.message })
     }
   }
 
-  const runDataSync = async (type) => {
+  const runDataSync = async () => {
     const settings = { ...dataSettings, ...dataConfigDraft }
-    setDataSyncStatus({ loading: type, message: '', error: '' })
+    const toSyncedAdvisor = (row, index) => {
+      const advisorName = String(row.advisor_name ?? row.name ?? '').trim()
+      const normalizedName = normalizeAdvisorName(row.normalized_name || advisorName)
+      return {
+        id: String(row.id || row.advisor_code || `${row.rank || index + 1}-${normalizedName}`),
+        advisor_code: row.advisor_code || '',
+        normalized_name: normalizedName,
+        name: advisorName,
+        team: row.team_name || row.team || '',
+        initials: getInitials(advisorName),
+        revenue: normalizeRevenue(row.revenue),
+        avatar: row.avatar_url || row.avatar || '',
+        avatar_url: row.avatar_url || row.avatar || '',
+        rank: Number(row.rank || index + 1),
+      }
+    }
+    setDataSyncStatus({ loading: 'all', message: '', error: '' })
     try {
-      if (type === 'daily') {
-        const result = await syncDailyRankings(settings)
-        setTopDayAdvisors(result.rows)
-        setDataSyncStatus({ loading: '', message: `Đã đồng bộ Top ngày: ${result.rows.length} TVV.`, error: '' })
+      const runStep = async (label, task) => {
+        try {
+          return await task()
+        } catch (stepError) {
+          throw new Error(`Lỗi đồng bộ ${label}: ${stepError?.message ?? stepError}`, { cause: stepError })
+        }
       }
-      if (type === 'monthly') {
-        const result = await syncMonthlyRankings(settings)
-        setAdvisors(result.rows.map((row) => ({
-          id: String(row.id || row.advisor_code || row.normalized_name),
-          name: row.advisor_name,
-          team: row.team_name,
-          initials: getInitials(row.advisor_name),
-          revenue: row.revenue,
-          avatar: row.avatar_url || '',
-        })))
-        setDataSyncStatus({ loading: '', message: `Đã đồng bộ Top tháng: ${result.rows.length} TVV.`, error: '' })
-      }
-      if (type === 'tbtn') {
-        const result = await syncTeamOverview(settings)
-        setTbtnRows(result.rows.map((row) => ({
-          id: `team-${row.normalized_team_name}`,
-          stt: row.rank,
-          tenNhom: row.team_name,
-          doanhThu: row.total_revenue,
-          tvvHoatDong: row.active_advisors,
-          soHopDong: row.contract_count,
-          percentOfCompany: row.percent_of_company,
-        })))
-        setDataSyncStatus({ loading: '', message: `Đã đồng bộ TBTN: ${result.rows.length} nhóm.`, error: '' })
-      }
-      if (type === 'all') {
-        const [daily, monthly, tbtn] = await Promise.all([
-          syncDailyRankings(settings),
-          syncMonthlyRankings(settings),
-          syncTeamOverview(settings),
-        ])
-        setTopDayAdvisors(daily.rows)
-        setAdvisors(monthly.rows.map((row) => ({
-          id: String(row.id || row.advisor_code || row.normalized_name),
-          name: row.advisor_name,
-          team: row.team_name,
-          initials: getInitials(row.advisor_name),
-          revenue: row.revenue,
-          avatar: row.avatar_url || '',
-        })))
-        setTbtnRows(tbtn.rows.map((row) => ({
-          id: `team-${row.normalized_team_name}`,
-          stt: row.rank,
-          tenNhom: row.team_name,
-          doanhThu: row.total_revenue,
-          tvvHoatDong: row.active_advisors,
-          soHopDong: row.contract_count,
-          percentOfCompany: row.percent_of_company,
-        })))
-        setDataSyncStatus({ loading: '', message: `Đã đồng bộ tất cả: ${daily.rows.length} Top ngày, ${monthly.rows.length} Top tháng, ${tbtn.rows.length} nhóm.`, error: '' })
-      }
+
+      const monthly = await runStep('Top tháng', () => syncMonthlyRankings(settings))
+      const daily = await runStep('Top ngày', () => syncDailyRankings(settings))
+      const tbtn = await runStep('TBTN', () => syncTeamOverview(settings))
+
+      setTopDayAdvisors(daily.rows.map(toSyncedAdvisor))
+      setAdvisors(monthly.rows.map(toSyncedAdvisor))
+      setDataSyncStatus({
+        loading: '',
+        message: `Đã đồng bộ: ${monthly.rows.length} Top tháng, ${daily.rows.length} Top ngày, ${tbtn.rows.length} nhóm.`,
+        error: '',
+      })
       await reloadImportLogs()
       showAdminToast('Đã đồng bộ dữ liệu')
     } catch (syncError) {
@@ -2403,12 +2282,6 @@ function AdminView({
       await reloadImportLogs()
     }
   }
-
-  useEffect(() => {
-    setTopDayImportState((current) =>
-      current.remoteUrl === topDaySheetUrl ? current : { ...current, remoteUrl: topDaySheetUrl || '' },
-    )
-  }, [topDaySheetUrl])
 
   const mergeWithStoredAvatars = async (rows) => {
     if (!isSupabaseConfigured) return rows
@@ -2432,38 +2305,6 @@ function AdminView({
       return
     }
     setError('Thông tin đăng nhập chưa đúng.')
-  }
-
-  const updateAdvisor = (id, field, value) => {
-    setAdvisors((current) =>
-      current.map((advisor) =>
-        advisor.id === id
-          ? {
-              ...advisor,
-              [field]:
-                field === 'revenue'
-                  ? normalizeRevenue(value)
-                  : field === 'initials'
-                    ? String(value).toUpperCase().slice(0, 2)
-                    : value,
-            }
-          : advisor,
-      ),
-    )
-  }
-
-  const addAdvisor = () => {
-    const id = generateId('advisor')
-    setAdvisors((current) => [
-      ...current,
-      { id, name: 'Tư vấn viên mới', team: 'Đội mới', initials: 'TV', revenue: 0, avatar: '' },
-    ])
-    setExpandedAdvisorId(id)
-  }
-
-  const deleteAdvisor = (id) => {
-    setAdvisors((current) => current.filter((advisor) => advisor.id !== id))
-    if (expandedAdvisorId === id) setExpandedAdvisorId(null)
   }
 
   const updateCampaign = async (id, field, value) => {
@@ -2601,20 +2442,13 @@ function AdminView({
   const handleAvatarUpload = async (id, file, scope, campaignId) => {
     if (!file) return
     const statusKey = `${scope}:${campaignId || 'main'}:${id}`
-    const advisor =
-      scope === 'advisors'
-        ? advisors.find((item) => item.id === id)
-        : safeArray(campaignRankings[campaignId]).find((item) => item.id === id)
+    const advisor = safeArray(campaignRankings[campaignId]).find((item) => item.id === id)
     if (!advisor) return
 
     setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saving' }))
     try {
       const { avatarUrl } = await uploadAdvisorAvatar(file, advisor)
-      if (scope === 'advisors') {
-        updateAdvisor(id, 'avatar', avatarUrl)
-      } else {
-        updateCampaignRanking(campaignId, id, 'avatar', avatarUrl)
-      }
+      updateCampaignRanking(campaignId, id, 'avatar', avatarUrl)
       setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saved' }))
       showAdminToast('Đã lưu avatar')
     } catch (uploadError) {
@@ -2677,192 +2511,6 @@ function AdminView({
     }
 
     return parseCsvTextToObjects(text)
-  }
-
-  const handleAdvisorExcelImport = async (file) => {
-    try {
-      const rows = await parseExcelFile(file)
-      const normalized = await mergeWithStoredAvatars(rows.map(normalizeImportedAdvisor).filter(Boolean))
-      await saveAdvisorsToSupabase(normalized)
-      await fetchAdvisors()
-      setAdvisorPreview(normalized)
-      setAdvisorPreviewSource(`Excel: ${file.name}`)
-      setAdvisorImportError('')
-      setAdvisorImportMessage('Đã lưu danh sách TVV lên Supabase.')
-    } catch (importError) {
-      console.error(importError)
-      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${importError?.message ?? importError}`)
-      setAdvisorImportError(importError?.message ?? 'Không thể đọc/lưu file Excel. Vui lòng kiểm tra lại file.')
-      setAdvisorImportMessage('')
-    }
-  }
-
-  const handleAdvisorRemoteImport = async () => {
-    try {
-      const rows = advisorRemoteUrl.includes('docs.google.com')
-        ? await fetchGoogleSheetCsvRows(advisorRemoteUrl)
-        : await parseRemoteDataset(advisorRemoteUrl)
-      const normalizedRows = sortByRevenueDesc(
-        rows.map(normalizeImportedAdvisor).filter(Boolean),
-      ).slice(0, 10)
-      const normalized = await mergeWithStoredAvatars(normalizedRows)
-      await saveAdvisorsToSupabase(normalized)
-      await fetchAdvisors()
-      setAdvisorPreview([])
-      setAdvisorPreviewSource('')
-      setAdvisorImportError('')
-      setAdvisorImportMessage('Đã cập nhật Top 10 từ Google Sheet lên Supabase.')
-    } catch (remoteError) {
-      console.error(remoteError)
-      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${remoteError?.message ?? remoteError}`)
-      setAdvisorImportError(remoteError.message)
-      setAdvisorImportMessage('')
-    }
-  }
-
-  const fetchTopDayAdvisors = async (url) => {
-    const rows = await fetchSheetRows(url)
-    const normalizedRows = sortByRevenueDesc(
-      rows.map(normalizeImportedAdvisor).filter(Boolean),
-    ).slice(0, 10)
-    return mergeWithStoredAvatars(normalizedRows)
-  }
-
-  const reloadTopDayData = async (url = topDayImportState.remoteUrl) => {
-    const nextUrl = String(url || '').trim()
-    if (!nextUrl) {
-      setTopDayImportState((current) => ({
-        ...current,
-        error: 'Vui lòng dán link Google Sheet Top ngày.',
-        message: '',
-      }))
-      return []
-    }
-
-    try {
-      const normalized = await fetchTopDayAdvisors(nextUrl)
-      setTopDayAdvisors(normalized)
-      setTopDayImportState((current) => ({
-        ...current,
-        remoteUrl: nextUrl,
-        preview: normalized,
-        error: '',
-        message: `Đã cập nhật dữ liệu Top ngày. Tìm thấy ${normalized.length} tư vấn viên.`,
-      }))
-      showAdminToast('Đã cập nhật dữ liệu Top ngày')
-      return normalized
-    } catch (topDayError) {
-      console.error('Không đọc được Google Sheet Top ngày', topDayError)
-      setTopDayImportState((current) => ({
-        ...current,
-        error: 'Không đọc được Google Sheet Top ngày. Hãy kiểm tra quyền chia sẻ sheet hoặc link.',
-        message: '',
-      }))
-      return []
-    }
-  }
-
-  const saveTopDaySheetUrl = async () => {
-    const nextUrl = String(topDayImportState.remoteUrl || '').trim()
-    if (!nextUrl) {
-      setTopDayImportState((current) => ({
-        ...current,
-        error: 'Vui lòng dán link Google Sheet Top ngày.',
-        message: '',
-      }))
-      return
-    }
-
-    window.localStorage.setItem(TOP_DAY_URL_STORAGE_KEY, nextUrl)
-    window.localStorage.setItem(TOP_DAY_LEGACY_URL_STORAGE_KEY, nextUrl)
-    setTopDaySheetUrl(nextUrl)
-    const rows = await reloadTopDayData(nextUrl)
-    if (rows.length) showAdminToast('Đã lưu Top ngày')
-  }
-
-  const applyAdvisorPreview = async () => {
-    if (!advisorPreview.length) return
-    try {
-      await saveAdvisorsToSupabase(advisorPreview)
-      await fetchAdvisors()
-      setAdvisorPreview([])
-      setAdvisorPreviewSource('')
-      setAdvisorImportError('')
-      setAdvisorImportMessage('Đã lưu danh sách TVV lên Supabase.')
-    } catch (previewError) {
-      console.error(previewError)
-      window.alert(`Không thể lưu danh sách TVV lên Supabase: ${previewError?.message ?? previewError}`)
-      setAdvisorImportError(previewError?.message ?? 'Không thể lưu danh sách TVV lên Supabase.')
-    }
-  }
-
-  const handleTbtnRemoteImport = async () => {
-    if (!tbtnImportState.remoteUrl.trim()) {
-      setTbtnImportState((current) => ({
-        ...current,
-        error: 'Vui lòng dán link Google Sheet TBTN.',
-        message: '',
-      }))
-      return []
-    }
-
-    try {
-      const normalized = await fetchTBTNData(tbtnImportState.remoteUrl)
-      const dataset = buildTbtnDataset(normalized)
-      const totalRevenue =
-        normalizeRevenue(dataset.totalRow?.doanhThu) ||
-        [...dataset.groups, dataset.specialRow].filter(Boolean).reduce((sum, team) => sum + normalizeRevenue(team.doanhThu), 0)
-      const successMessage = `✓ Đã kết nối thành công\n✓ Tìm thấy ${dataset.groups.length} nhóm\n✓ Tổng doanh thu: ${totalRevenue.toLocaleString('vi-VN')} đ`
-      setTbtnRows(normalized)
-      setTbtnImportState((current) => ({
-        ...current,
-        preview: normalized,
-        source: `Google Sheet/API: ${current.remoteUrl}`,
-        error: '',
-        message: 'Kết nối thành công. Đã tải dữ liệu TBTN.',
-      }))
-      setTbtnImportState((current) => ({ ...current, message: successMessage }))
-      return normalized
-    } catch (remoteError) {
-      setTbtnImportState((current) => ({
-        ...current,
-        error: remoteError?.message ?? 'Không lấy được dữ liệu TBTN.',
-        message: '',
-      }))
-      return []
-    }
-  }
-
-  const applyTbtnPreview = () => {
-    if (!tbtnImportState.preview.length) return
-    setTbtnRows(tbtnImportState.preview)
-    setTbtnImportState((current) => ({
-      ...current,
-      preview: [],
-      source: '',
-      error: '',
-      message: 'Đã lưu dữ liệu TBTN vào trình duyệt.',
-    }))
-    showAdminToast('Đã cập nhật dữ liệu TBTN')
-  }
-
-  const saveTbtnSheetUrl = async () => {
-    const nextUrl = tbtnImportState.remoteUrl.trim()
-    if (!nextUrl) {
-      setTbtnImportState((current) => ({ ...current, error: 'Vui lòng dán link Google Sheet TBTN.', message: '' }))
-      return
-    }
-
-    window.localStorage.setItem(TBTN_URL_STORAGE_KEY, nextUrl)
-    setTbtnSheetUrl(nextUrl)
-    const rows = await handleTbtnRemoteImport()
-    setTbtnImportState((current) => ({
-      ...current,
-      remoteUrl: nextUrl,
-      error: rows.length ? '' : current.error,
-      message: rows.length ? 'Đã lưu link và tải lại dữ liệu TBTN.' : current.message,
-    }))
-    if (rows.length) showAdminToast('Đã lưu link TBTN')
   }
 
   const getCampaignImport = (campaignId) =>
@@ -3094,19 +2742,6 @@ function AdminView({
                     />
                   </label>
                   <label className="full-row">
-                    <span>Google Drive folder PhiBaoHiem</span>
-                    <input
-                      value={dataConfigDraft[DATA_SETTING_KEYS.driveFolderUrl] || ''}
-                      onChange={(event) =>
-                        setDataConfigDraft((current) => ({
-                          ...current,
-                          [DATA_SETTING_KEYS.driveFolderUrl]: event.target.value,
-                        }))
-                      }
-                      placeholder="Dán link folder Drive chứa file PhiBaoHiem"
-                    />
-                  </label>
-                  <label className="full-row">
                     <span>Google Sheet / nguồn TBTN</span>
                     <input
                       value={dataConfigDraft[DATA_SETTING_KEYS.tbtnUrl] || ''}
@@ -3116,7 +2751,7 @@ function AdminView({
                           [DATA_SETTING_KEYS.tbtnUrl]: event.target.value,
                         }))
                       }
-                      placeholder="Dán link Google Sheet hoặc endpoint TBTN"
+                      placeholder="Dán link Google Sheet TBTN"
                     />
                   </label>
                 </div>
@@ -3130,17 +2765,8 @@ function AdminView({
                   >
                     {dataSyncStatus.loading === 'settings' ? 'Đang lưu...' : 'Lưu cấu hình'}
                   </button>
-                  <button type="button" className="button-light" onClick={() => runDataSync('daily')} disabled={Boolean(dataSyncStatus.loading)}>
-                    {dataSyncStatus.loading === 'daily' ? 'Đang đồng bộ...' : 'Đồng bộ Top ngày'}
-                  </button>
-                  <button type="button" className="button-light" onClick={() => runDataSync('monthly')} disabled={Boolean(dataSyncStatus.loading)}>
-                    {dataSyncStatus.loading === 'monthly' ? 'Đang đồng bộ...' : 'Đồng bộ Top tháng'}
-                  </button>
-                  <button type="button" className="button-light" onClick={() => runDataSync('tbtn')} disabled={Boolean(dataSyncStatus.loading)}>
-                    {dataSyncStatus.loading === 'tbtn' ? 'Đang đồng bộ...' : 'Đồng bộ TBTN'}
-                  </button>
-                  <button type="button" className="button-primary" onClick={() => runDataSync('all')} disabled={Boolean(dataSyncStatus.loading)}>
-                    {dataSyncStatus.loading === 'all' ? 'Đang đồng bộ tất cả...' : 'Đồng bộ tất cả'}
+                  <button type="button" className="button-primary" onClick={runDataSync} disabled={Boolean(dataSyncStatus.loading)}>
+                    {dataSyncStatus.loading === 'all' ? 'Đang đồng bộ...' : 'Đồng bộ'}
                   </button>
                 </div>
 
@@ -3176,202 +2802,6 @@ function AdminView({
                   ) : (
                     <div className="empty-state">Chưa có lịch sử import.</div>
                   )}
-                </div>
-              </section>
-            )}
-
-            {activeAdminTab === 'advisors' && (
-              <section className="admin-section">
-                <div className="admin-section__head">
-                  <div>
-                    <h2>Tư vấn viên</h2>
-                    <p>Quản lý Top bảng vàng.</p>
-                  </div>
-                  <button
-                    type="button"
-                    className="button-primary"
-                    aria-label="Thêm tư vấn viên"
-                    onClick={addAdvisor}
-                  >
-                    <span className="round-icon button-icon">
-                      <Plus size={18} />
-                    </span>
-                  </button>
-                </div>
-
-                <ImportTools
-                  remoteUrl={advisorRemoteUrl}
-                  setRemoteUrl={setAdvisorRemoteUrl}
-                  onFileImport={handleAdvisorExcelImport}
-                  onRemoteImport={handleAdvisorRemoteImport}
-                  error={advisorImportError}
-                  message={advisorImportMessage}
-                />
-
-                <div className="subsection-box">
-                  <div className="subsection-box__head">
-                    <div>
-                      <h3>Dữ liệu Top ngày</h3>
-                      <p>Nhập link Google Sheet có cột STT, Tên tư vấn viên, Nhóm, Doanh thu.</p>
-                    </div>
-                  </div>
-                  <div className="import-tools__row import-tools__row--remote">
-                    <input
-                      placeholder="Dán link Google Sheet Top ngày"
-                      value={topDayImportState.remoteUrl}
-                      onChange={(event) =>
-                        setTopDayImportState((current) => ({
-                          ...current,
-                          remoteUrl: event.target.value,
-                          error: '',
-                          message: '',
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="tbtn-config-actions">
-                    <button type="button" className="button-primary" onClick={saveTopDaySheetUrl}>
-                      Lưu Top ngày
-                    </button>
-                    <button type="button" className="button-light" onClick={() => reloadTopDayData()}>
-                      Tải lại dữ liệu Top ngày
-                    </button>
-                  </div>
-                  {topDaySheetUrl ? <div className="form-success">Đang dùng link Top ngày: {topDaySheetUrl}</div> : null}
-                  {topDayImportState.error ? <div className="form-error">{topDayImportState.error}</div> : null}
-                  {topDayImportState.message ? <div className="form-success">{topDayImportState.message}</div> : null}
-                  {topDayImportState.preview.length ? (
-                    <div className="preview-list">
-                      {topDayImportState.preview.slice(0, 5).map((advisor) => (
-                        <div key={advisor.id} className="preview-row">
-                          <AvatarCircle advisor={advisor} />
-                          <div className="preview-row__content">
-                            <strong>{advisor.name}</strong>
-                            <span>
-                              {displayTeamName(advisor.team)} - {formatCurrency(advisor.revenue)}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                <PreviewPanel
-                  title="Preview dữ liệu tư vấn viên"
-                  source={advisorPreviewSource}
-                  rows={advisorPreview}
-                  onApply={applyAdvisorPreview}
-                  onClear={() => {
-                    setAdvisorPreview([])
-                    setAdvisorPreviewSource('')
-                  }}
-                />
-
-                <div className="admin-list">
-                  {sortByRevenueDesc(advisors).map((advisor) => {
-                    const expanded = expandedAdvisorId === advisor.id
-                    const avatarStatusKey = `advisors:main:${advisor.id}`
-                    const avatarStatus = avatarUploadStatus[avatarStatusKey]
-                    return (
-                      <div key={advisor.id} className="compact-card">
-                        <div className="compact-card__summary">
-                          <div className="compact-card__left">
-                            <AvatarCircle advisor={advisor} />
-                            <div className="compact-card__content">
-                              <strong>{advisor.name}</strong>
-                              <span>{displayTeamName(advisor.team)}</span>
-                            </div>
-                          </div>
-                          <div className="compact-card__right">
-                            <span className="compact-card__value">{formatCompactMoney(advisor.revenue)}</span>
-                            <div className="compact-card__actions">
-                              <button
-                                type="button"
-                                className="admin-action-btn admin-action-btn--edit"
-                                aria-label={expanded ? 'Đóng chỉnh sửa' : 'Chỉnh sửa'}
-                                onClick={() =>
-                                  setExpandedAdvisorId(expanded ? null : advisor.id)
-                                }
-                              >
-                                <Settings size={17} strokeWidth={2} />
-                              </button>
-                              <button
-                                type="button"
-                                className="admin-action-btn admin-action-btn--delete"
-                                aria-label="Xóa"
-                                onClick={() => deleteAdvisor(advisor.id)}
-                              >
-                                <Trash2 size={17} strokeWidth={2} />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {expanded && (
-                          <div className="compact-card__editor">
-                            <div className="editor-card__top">
-                              <AvatarCircle advisor={advisor} />
-                              <label className="upload-inline">
-                                <span className="round-icon button-icon">
-                                  <Upload size={14} />
-                                </span>
-                                Upload avatar
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  onChange={(e) => {
-                                    handleAvatarUpload(advisor.id, e.target.files?.[0], 'advisors')
-                                    e.target.value = ''
-                                  }}
-                                />
-                              </label>
-                              {avatarStatus === 'saving' ? <span className="avatar-save-status">Đang lưu...</span> : null}
-                              {avatarStatus === 'saved' ? <span className="avatar-save-status">Đã lưu avatar</span> : null}
-                              {avatarStatus === 'error' ? <span className="avatar-save-status avatar-save-status--error">Lưu lỗi</span> : null}
-                            </div>
-
-                            <div className="editor-grid">
-                              <label>
-                                <span>Họ tên</span>
-                                <input
-                                  value={advisor.name}
-                                  onChange={(e) => updateAdvisor(advisor.id, 'name', e.target.value)}
-                                />
-                              </label>
-                              <label>
-                                <span>Đội nhóm</span>
-                                <input
-                                  value={advisor.team}
-                                  onChange={(e) => updateAdvisor(advisor.id, 'team', e.target.value)}
-                                />
-                              </label>
-                              <label>
-                                <span>Viết tắt</span>
-                                <input
-                                  value={advisor.initials}
-                                  onChange={(e) =>
-                                    updateAdvisor(advisor.id, 'initials', e.target.value)
-                                  }
-                                />
-                              </label>
-                              <label>
-                                <span>Doanh thu</span>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  value={advisor.revenue}
-                                  onChange={(e) =>
-                                    updateAdvisor(advisor.id, 'revenue', e.target.value)
-                                  }
-                                />
-                              </label>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
                 </div>
               </section>
             )}
@@ -3653,90 +3083,6 @@ function AdminView({
               </section>
             )}
 
-            {activeAdminTab === 'tbtn' && (
-              <section className="admin-section">
-                <div className="admin-section__head">
-                  <div>
-                    <h2>TBTN / Trưởng nhóm</h2>
-                    <p>Nhập API Google Sheet, JSON hoặc CSV để cập nhật tổng quan nhóm.</p>
-                  </div>
-                </div>
-
-                <ImportTools
-                  remoteUrl={tbtnImportState.remoteUrl}
-                  setRemoteUrl={(value) =>
-                    setTbtnImportState((current) => ({ ...current, remoteUrl: value }))
-                  }
-                  onFileImport={async (file) => {
-                    try {
-                      const rows = await parseExcelFile(file)
-                      setTbtnImportState((current) => ({
-                        ...current,
-                        preview: rows.map(normalizeImportedTeam).filter(Boolean),
-                        source: `Excel: ${file.name}`,
-                        error: '',
-                        message: '',
-                      }))
-                    } catch {
-                      setTbtnImportState((current) => ({
-                        ...current,
-                        error: 'Không đọc được file TBTN. Vui lòng kiểm tra lại.',
-                        message: '',
-                      }))
-                    }
-                  }}
-                  onRemoteImport={handleTbtnRemoteImport}
-                  error={tbtnImportState.error}
-                  message={tbtnImportState.message}
-                />
-
-                <div className="tbtn-config-actions">
-                  <div className="form-success">Vào Google Sheet &gt; Share &gt; Anyone with the link &gt; Viewer. Dùng link của đúng tab BaoCaoNhom có gid.</div>
-                  <div className="form-success">Hãy copy link đúng tab sheet đang chứa dữ liệu TBTN, bao gồm gid nếu có nhiều sheet.</div>
-                  <button type="button" className="button-light" onClick={handleTbtnRemoteImport}>
-                    Kiểm tra kết nối
-                  </button>
-                  <button type="button" className="button-primary" onClick={saveTbtnSheetUrl}>
-                    Lưu link Google Sheet TBTN
-                  </button>
-                  {tbtnSheetUrl ? <div className="form-success">Đang dùng link: {tbtnSheetUrl}</div> : null}
-                </div>
-
-                <TeamPreviewPanel
-                  title="Preview TBTN / Trưởng nhóm"
-                  source={tbtnImportState.source}
-                  rows={tbtnImportState.preview}
-                  onApply={applyTbtnPreview}
-                  onClear={() =>
-                    setTbtnImportState((current) => ({
-                      ...current,
-                      preview: [],
-                      source: '',
-                      error: '',
-                    }))
-                  }
-                />
-
-                <div className="admin-section__head admin-section__head--compact">
-                  <div>
-                    <h2>Dữ liệu đang dùng</h2>
-                    <p>
-                      {buildTbtnDataset(tbtnRows).groups.length} nhóm đã parse từ Google Sheet · Tổng doanh thu{' '}
-                      {formatTbtnMoney(buildTbtnDataset(tbtnRows).totalRow?.doanhThu || 0)}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="admin-list">
-                  {tbtnRows.length ? (
-                    buildTbtnDataset(tbtnRows).groups.map((team) => <TeamAdminRow key={team.id} team={team} />)
-                  ) : (
-                    <div className="empty-state">Chưa có dữ liệu TBTN.</div>
-                  )}
-                </div>
-              </section>
-            )}
-
             {activeAdminTab === 'banners' && (
               <BannerManager
                 banners={banners}
@@ -3818,49 +3164,6 @@ function MoreMenuBottomSheet({ open, onClose, onOpenTbtn }) {
           <small>Tiện ích mở rộng</small>
         </span>
       </button>
-    </div>
-  )
-}
-
-function TeamPreviewPanel({ title, source, rows, onApply, onClear }) {
-  if (!rows.length) return null
-
-  return (
-    <div className="preview-panel">
-      <div className="preview-panel__head">
-        <div>
-          <h3>{title}</h3>
-          <p>{source}</p>
-        </div>
-        <div className="preview-panel__actions">
-          <button type="button" className="button-light" onClick={onClear}>
-            Xóa preview
-          </button>
-          <button type="button" className="button-primary" onClick={onApply}>
-            Lưu dữ liệu TBTN
-          </button>
-        </div>
-      </div>
-
-      <div className="preview-list">
-        {rows.slice(0, 5).map((team) => (
-          <TeamAdminRow key={team.id} team={team} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TeamAdminRow({ team }) {
-  return (
-    <div className="preview-row team-preview-row">
-      <TeamAvatar team={team} />
-      <div className="preview-row__content">
-        <strong>{team.tenNhom}</strong>
-        <span>
-          {team.truongNhom || 'Chưa có trưởng nhóm'} - {formatCompactMoney(team.doanhThu)} - {team.tvvHoatDong || 0} TVV
-        </span>
-      </div>
     </div>
   )
 }
