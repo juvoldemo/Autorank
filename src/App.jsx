@@ -142,6 +142,7 @@ const mainTabs = [
 ]
 
 const adminTabs = [
+  { id: 'avatars', label: 'Avatar TVV' },
   { id: 'data', label: 'Dữ liệu Supabase' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
   { id: 'banners', label: 'Banner' },
@@ -1059,7 +1060,6 @@ function App() {
   const applyRemoteData = useCallback((remoteData) => {
     isApplyingRemoteData.current = true
 
-    setAdvisors((current) => (rowsEqual(current, remoteData.advisors) ? current : remoteData.advisors))
     setCampaigns((current) => (rowsEqual(current, remoteData.campaigns) ? current : remoteData.campaigns))
     setCampaignRankings((current) =>
       rowsEqual(current, remoteData.campaignRankings) ? current : remoteData.campaignRankings,
@@ -1160,6 +1160,7 @@ function App() {
   if (pathname === '/admin') {
     return (
       <AdminView
+        advisors={advisors}
         campaigns={campaigns}
         campaignRankings={campaignRankings}
         banners={banners}
@@ -1172,6 +1173,7 @@ function App() {
         setTopDaySheetUrl={setTopDaySheetUrl}
         dataSettings={dataSettings}
         setDataSettings={setDataSettings}
+        topDayAdvisors={topDayAdvisors}
         setTopDayAdvisors={setTopDayAdvisors}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchCompetitions={fetchCompetitions}
@@ -1980,6 +1982,70 @@ function AvatarCircle({ advisor, size = 'md' }) {
   )
 }
 
+const getRankingAvatarStatusKey = (period, advisor = {}) => {
+  const name = advisor.name || advisor.advisor_name || advisor.normalized_name || advisor.id || 'advisor'
+  return `ranking:${period}:${advisor.advisor_code || advisor.id || normalizeAdvisorName(name)}`
+}
+
+function RankingAvatarList({ title, period, rows, uploadStatus, onUpload }) {
+  const visibleRows = safeArray(rows).slice(0, 12)
+
+  return (
+    <div className="ranking-avatar-section">
+      <div className="ranking-avatar-section__head">
+        <div>
+          <strong>{title}</strong>
+          <span>{visibleRows.length ? `${visibleRows.length} TVV đầu bảng` : 'Chưa có dữ liệu'}</span>
+        </div>
+      </div>
+
+      {visibleRows.length ? (
+        <div className="ranking-avatar-list">
+          {visibleRows.map((advisor, index) => {
+            const statusKey = getRankingAvatarStatusKey(period, advisor)
+            const status = uploadStatus[statusKey]
+            const rowKey = `${period}-${advisor.id || advisor.advisor_code || advisor.name || index}`
+
+            return (
+              <div key={rowKey} className="ranking-avatar-row">
+                <AvatarCircle advisor={advisor} />
+                <div className="ranking-avatar-meta">
+                  <strong>{advisor.name || advisor.advisor_name || 'Chưa có tên'}</strong>
+                  <span>
+                    #{advisor.rank || index + 1}
+                    {advisor.team ? ` - ${displayTeamName(advisor.team)}` : ''}
+                  </span>
+                </div>
+                <div className="ranking-avatar-actions">
+                  <label className="upload-inline ranking-avatar-upload">
+                    <Upload size={13} />
+                    Đổi avatar
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => {
+                        onUpload(period, advisor, event.target.files?.[0])
+                        event.target.value = ''
+                      }}
+                    />
+                  </label>
+                  {status === 'saving' ? <span className="avatar-save-status">Đang lưu...</span> : null}
+                  {status === 'saved' ? <span className="avatar-save-status">Đã lưu</span> : null}
+                  {status === 'error' ? (
+                    <span className="avatar-save-status avatar-save-status--error">Lỗi lưu</span>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="empty-state">Hãy đồng bộ Top tháng/Top ngày trước khi đổi avatar.</div>
+      )}
+    </div>
+  )
+}
+
 function PodiumCard({ advisor, rank, delay = 0 }) {
   if (!advisor) return <div className="podium-card podium-card--empty" />
   const tierLabel = rank === 1 ? 'Vàng' : rank === 2 ? 'Bạc' : 'Đồng'
@@ -2252,6 +2318,7 @@ function ModalShell({ title, children, onClose, className = '' }) {
 }
 
 function AdminView({
+  advisors,
   campaigns,
   campaignRankings,
   banners,
@@ -2264,6 +2331,7 @@ function AdminView({
   setTopDaySheetUrl,
   dataSettings,
   setDataSettings,
+  topDayAdvisors,
   setTopDayAdvisors,
   setIsAdminLoggedIn,
   fetchCompetitions,
@@ -2296,6 +2364,9 @@ function AdminView({
   const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
   const [leaderboardSyncStatus, setLeaderboardSyncStatus] = useState({})
   const [importLogs, setImportLogs] = useState([])
+  const hasLoadedAdminRankings = useRef(false)
+  const dataSyncInFlightRef = useRef(false)
+  const runDataSyncRef = useRef(null)
 
   useEffect(() => {
     if (!adminTabs.some((tab) => tab.id === activeAdminTab)) {
@@ -2380,7 +2451,9 @@ function AdminView({
     }
   }
 
-  const runDataSync = async () => {
+  const runDataSync = async ({ automatic = false } = {}) => {
+    if (dataSyncInFlightRef.current) return
+    dataSyncInFlightRef.current = true
     const settings = { ...dataSettings, ...dataConfigDraft }
     const toSyncedAdvisor = (row, index) => {
       const advisorName = String(row.advisor_name ?? row.name ?? '').trim()
@@ -2398,7 +2471,7 @@ function AdminView({
         rank: Number(row.rank || index + 1),
       }
     }
-    setDataSyncStatus({ loading: 'all', message: '', error: '' })
+    setDataSyncStatus({ loading: 'all', message: automatic ? 'Dang tu dong dong bo du lieu...' : '', error: '' })
     try {
       const runStep = async (label, task) => {
         try {
@@ -2412,8 +2485,11 @@ function AdminView({
       const daily = await runStep('Top ngày', () => syncDailyRankings(settings))
       const tbtn = await runStep('TBTN', () => syncTeamOverview(settings))
 
-      setTopDayAdvisors(daily.rows.map(toSyncedAdvisor))
-      setAdvisors(monthly.rows.map(toSyncedAdvisor))
+      const syncedDailyRows = await mergeWithStoredAvatars(daily.rows.map(toSyncedAdvisor))
+      const syncedMonthlyRows = await mergeWithStoredAvatars(monthly.rows.map(toSyncedAdvisor))
+
+      setTopDayAdvisors(syncedDailyRows)
+      setAdvisors(syncedMonthlyRows)
       setDataSyncStatus({
         loading: '',
         message: `Đã đồng bộ: ${monthly.rows.length} Top tháng, ${daily.rows.length} Top ngày, ${tbtn.rows.length} nhóm.`,
@@ -2424,8 +2500,24 @@ function AdminView({
     } catch (syncError) {
       setDataSyncStatus({ loading: '', message: '', error: syncError.message })
       await reloadImportLogs()
+    } finally {
+      dataSyncInFlightRef.current = false
     }
   }
+
+  useEffect(() => {
+    runDataSyncRef.current = runDataSync
+  })
+
+  useEffect(() => {
+    if (!isAdminLoggedIn) return undefined
+
+    const syncTimer = window.setInterval(() => {
+      runDataSyncRef.current?.({ automatic: true })
+    }, 30 * 60 * 1000)
+
+    return () => window.clearInterval(syncTimer)
+  }, [isAdminLoggedIn])
 
   const mergeWithStoredAvatars = async (rows) => {
     if (!isSupabaseConfigured) return rows
@@ -2437,6 +2529,38 @@ function AdminView({
       return rows
     }
   }
+
+  useEffect(() => {
+    if (!isAdminLoggedIn || !isSupabaseConfigured || hasLoadedAdminRankings.current) return undefined
+
+    let isMounted = true
+    hasLoadedAdminRankings.current = true
+
+    const loadAdminRankings = async () => {
+      try {
+        const [monthlyRows, dailyRows] = await Promise.all([
+          fetchMonthlyRankings(),
+          fetchDailyRankings(),
+        ])
+        const [monthlyWithAvatars, dailyWithAvatars] = await Promise.all([
+          mergeWithStoredAvatars(monthlyRows),
+          mergeWithStoredAvatars(dailyRows),
+        ])
+
+        if (!isMounted) return
+        setAdvisors((current) => (current.length ? current : monthlyWithAvatars))
+        setTopDayAdvisors((current) => (current.length ? current : dailyWithAvatars))
+      } catch (rankingError) {
+        console.error('Khong the tai Top thang/Top ngay cho admin avatar', rankingError)
+      }
+    }
+
+    loadAdminRankings()
+
+    return () => {
+      isMounted = false
+    }
+  }, [isAdminLoggedIn, setAdvisors, setTopDayAdvisors])
 
   const handleLogin = (event) => {
     event.preventDefault()
@@ -2639,6 +2763,43 @@ function AdminView({
       console.error('Không thể upload/lưu avatar tư vấn viên', uploadError)
       setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'error' }))
       alertSupabaseError('Không thể upload/lưu avatar tư vấn viên', uploadError)
+    }
+  }
+
+  const applyAvatarToRankingRows = (rows, sourceAdvisor, avatarUrl) => {
+    const sourceCode = String(sourceAdvisor?.advisor_code || '').trim()
+    const sourceName = normalizeAdvisorName(
+      sourceAdvisor?.normalized_name || sourceAdvisor?.name || sourceAdvisor?.advisor_name || '',
+    )
+
+    return safeArray(rows).map((row) => {
+      const rowCode = String(row?.advisor_code || '').trim()
+      const rowName = normalizeAdvisorName(row?.normalized_name || row?.name || row?.advisor_name || '')
+      const isSameAdvisor = (sourceCode && rowCode === sourceCode) || (!sourceCode && sourceName && rowName === sourceName)
+      return isSameAdvisor ? { ...row, avatar: avatarUrl, avatar_url: avatarUrl } : row
+    })
+  }
+
+  const handleRankingAvatarUpload = async (period, advisor, file) => {
+    if (!file || !advisor) return
+    const statusKey = getRankingAvatarStatusKey(period, advisor)
+
+    setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saving' }))
+    try {
+      const { avatarUrl } = await uploadAdvisorAvatar(file, {
+        ...advisor,
+        name: advisor.name || advisor.advisor_name,
+        team: advisor.team || advisor.team_name,
+      })
+
+      setAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
+      setTopDayAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
+      setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saved' }))
+      showAdminToast('Đã lưu avatar vào Supabase')
+    } catch (uploadError) {
+      console.error('Không thể upload/lưu avatar Top tháng/Top ngày', uploadError)
+      setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'error' }))
+      alertSupabaseError('Không thể upload/lưu avatar Top tháng/Top ngày', uploadError)
     }
   }
 
@@ -2961,6 +3122,30 @@ function AdminView({
                 {dataSyncStatus.error ? <div className="form-error">{dataSyncStatus.error}</div> : null}
                 {dataSyncStatus.message ? <div className="form-success">{dataSyncStatus.message}</div> : null}
 
+                <div className="subsection-box ranking-avatar-manager">
+                  <div className="subsection-box__head">
+                    <div>
+                      <h3>Avatar Top tháng / Top ngày</h3>
+                      <p>Đổi avatar theo tên TVV và lưu vào Supabase để tự gán lại sau mỗi lần import.</p>
+                    </div>
+                  </div>
+
+                  <RankingAvatarList
+                    title="Top tháng"
+                    period="month"
+                    rows={advisors}
+                    uploadStatus={avatarUploadStatus}
+                    onUpload={handleRankingAvatarUpload}
+                  />
+                  <RankingAvatarList
+                    title="Top ngày"
+                    period="day"
+                    rows={topDayAdvisors}
+                    uploadStatus={avatarUploadStatus}
+                    onUpload={handleRankingAvatarUpload}
+                  />
+                </div>
+
                 <div className="admin-section__head admin-section__head--compact">
                   <div>
                     <h2>Lịch sử import</h2>
@@ -2990,6 +3175,34 @@ function AdminView({
                   ) : (
                     <div className="empty-state">Chưa có lịch sử import.</div>
                   )}
+                </div>
+              </section>
+            )}
+
+            {activeAdminTab === 'avatars' && (
+              <section className="admin-section">
+                <div className="admin-section__head">
+                  <div>
+                    <h2>Avatar TVV</h2>
+                    <p>Upload avatar cho TVV trong Top thang / Top ngay. Avatar duoc luu vao Supabase va tu dong gan lai sau moi lan import.</p>
+                  </div>
+                </div>
+
+                <div className="subsection-box ranking-avatar-manager">
+                  <RankingAvatarList
+                    title="Top thang"
+                    period="month"
+                    rows={advisors}
+                    uploadStatus={avatarUploadStatus}
+                    onUpload={handleRankingAvatarUpload}
+                  />
+                  <RankingAvatarList
+                    title="Top ngay"
+                    period="day"
+                    rows={topDayAdvisors}
+                    uploadStatus={avatarUploadStatus}
+                    onUpload={handleRankingAvatarUpload}
+                  />
                 </div>
               </section>
             )}

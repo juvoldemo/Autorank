@@ -115,7 +115,8 @@ export async function fetchSheetRows(url, sheetName) {
   if (!url?.trim()) throw new Error('Chưa có link Google Sheet.')
 
   try {
-    const finalUrl = url.includes('docs.google.com') ? googleSheetCsvUrl(url, sheetName) : url
+    const currentSheetName = Array.isArray(sheetName) ? sheetName[0] : sheetName
+    const finalUrl = url.includes('docs.google.com') ? googleSheetCsvUrl(url, currentSheetName) : url
     console.log('[Google Sheet] fetch URL', finalUrl)
 
     const response = await fetch(finalUrl)
@@ -167,9 +168,9 @@ const requireSetting = (settings, key, label) => {
 }
 
 const toRankingSheetRow = (row, index, config, sourceName, periodFields) => {
-  const advisorName = String(getCellValue(row, config.advisorIndex, getRawValue(row, config.advisorHeaders))).trim()
-  const teamName = cleanTeamName(getCellValue(row, config.teamIndex, getRawValue(row, config.teamHeaders)))
-  const revenue = normalizeRevenue(getCellValue(row, config.revenueIndex, getRawValue(row, config.revenueHeaders)))
+  const advisorName = String(getRawValue(row, config.advisorHeaders, getCellValue(row, config.advisorIndex))).trim()
+  const teamName = cleanTeamName(getRawValue(row, config.teamHeaders, getCellValue(row, config.teamIndex)))
+  const revenue = normalizeRevenue(getRawValue(row, config.revenueHeaders, getCellValue(row, config.revenueIndex)))
 
   if (!advisorName) return null
 
@@ -188,7 +189,7 @@ const toRankingSheetRow = (row, index, config, sourceName, periodFields) => {
 }
 
 const toTeamOverviewSheetRow = (row, reportDate, totalCompanyRevenue) => {
-  const rank = normalizeInteger(getCellValue(row, 0, getRawValue(row, ['STT'])))
+  const rank = normalizeInteger(getRawValue(row, ['STT'], getCellValue(row, 0)))
   const teamName = cleanTeamName(getCellValue(row, 1, getRawValue(row, ['Tên nhóm', 'Ten nhom'])))
   const normalizedTeamName = normalizeHeader(teamName)
 
@@ -218,7 +219,7 @@ export async function syncDailyRankings(settingsOverride = null) {
   const reportDate = todayIso()
 
   try {
-    const rawRows = await fetchSheetRows(sourceUrl, 'To10Ngay')
+    const rawRows = await fetchSheetRows(sourceUrl, 'TopNgay')
     const rows = rawRows
       .map((row, index) =>
         toRankingSheetRow(
@@ -271,7 +272,7 @@ export async function syncMonthlyRankings(settingsOverride = null) {
   const reportYear = now.getFullYear()
 
   try {
-    const rawRows = await fetchSheetRows(sourceUrl, 'Sheet1')
+    const rawRows = await fetchSheetRows(sourceUrl, 'TopThang')
     const rows = rawRows
       .map((row, index) =>
         toRankingSheetRow(
@@ -283,9 +284,9 @@ export async function syncMonthlyRankings(settingsOverride = null) {
             teamIndex: 2,
             revenueIndex: 3,
             rankHeaders: ['Hạng', 'Hang', 'hang'],
-            advisorHeaders: ['Họ tên', 'Ho ten', 'ho ten'],
-            teamHeaders: ['Đội', 'Doi', 'doi'],
             revenueHeaders: ['Doanh thu', 'Doanh Thu', 'doanh thu'],
+            advisorHeaders: ['Ten tu van vien', 'ten tu van vien', 'Ho ten', 'ho ten'],
+            teamHeaders: ['Nhom', 'nhom', 'Doi', 'doi'],
           },
           sourceUrl,
           { report_date: todayIso(), report_month: reportMonth, report_year: reportYear },
@@ -322,7 +323,7 @@ export async function syncTeamOverview(settingsOverride = null) {
   const reportDate = todayIso()
 
   try {
-    const rawRows = await fetchSheetRows(sourceUrl, 'BaoCaoNhom')
+    const rawRows = await fetchSheetRows(sourceUrl, 'TBTN')
     const preliminaryRows = rawRows
       .map((row) => toTeamOverviewSheetRow(row, reportDate, 0))
       .filter(Boolean)
