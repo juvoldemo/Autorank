@@ -6606,3 +6606,492 @@ h3,
     transform: translateY(0) scale(1);
   }
 }
+
+.more-menu-item--sao-viet {
+  position: relative;
+  border: 1px solid rgba(244, 191, 42, 0.26) !important;
+  background: linear-gradient(135deg, rgba(255, 247, 210, 0.98), rgba(255, 255, 255, 0.92)) !important;
+}
+
+.more-menu-item--sao-viet .more-menu-item__icon {
+  color: #8a5a00 !important;
+  background: linear-gradient(135deg, #fff2ad, #f4bf2a) !important;
+}
+
+.more-menu-item--sao-viet em {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #0b3b86;
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sao-viet-page {
+  min-height: 100%;
+  color: var(--ink-900);
+}
+
+.sao-viet-header {
+  width: min(100%, 520px);
+  margin: 0 auto;
+  padding: 12px 16px 0;
+}
+
+.sao-viet-body {
+  width: min(100%, 520px);
+  padding-top: 12px;
+}
+
+.sao-viet-hero {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  overflow: hidden;
+  min-height: 168px;
+  padding: 22px 18px;
+  border-radius: 30px;
+  color: #fff;
+  background:
+    radial-gradient(circle at 86% 14%, rgba(255, 214, 107, 0.42), transparent 31%),
+    linear-gradient(145deg, #071b45 0%, #0c3d91 56%, #082765 100%);
+  box-shadow: 0 24px 56px rgba(8, 39, 101, 0.26);
+}
+
+.sao-viet-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.15), transparent 42%);
+  pointer-events: none;
+}
+
+.sao-viet-kicker {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+}
+
+.sao-viet-hero h1 {
+  position: relative;
+  z-index: 1;
+  margin: 16px 0 0;
+  font-size: 34px;
+  line-height: 1.04;
+  color: #fff;
+}
+
+.sao-viet-hero p {
+  position: relative;
+  z-index: 1;
+  max-width: 280px;
+  margin: 10px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sao-viet-hero__icon {
+  position: relative;
+  z-index: 1;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--bv-gold-400);
+  box-shadow: 0 0 34px rgba(255, 214, 107, 0.26);
+}
+
+.sao-viet-stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin-top: 10px;
+}
+
+.sao-viet-stats > div {
+  display: flex;
+  min-height: 48px;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 12px 26px rgba(15, 42, 88, 0.08);
+  backdrop-filter: blur(14px);
+  text-align: center;
+}
+
+.sao-viet-stats svg {
+  color: var(--bv-gold-500);
+}
+
+.sao-viet-stats strong {
+  display: block;
+  margin-top: 0;
+  overflow: hidden;
+  color: var(--bv-blue-950);
+  font-size: 19px;
+  line-height: 1.1;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sao-viet-stats span {
+  display: block;
+  margin-top: 0;
+  color: var(--ink-500);
+  font-size: 11.5px;
+  line-height: 1.25;
+}
+
+.sao-viet-filter {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: 14px -2px 0;
+  padding: 6px 2px 8px;
+  scrollbar-width: none;
+}
+
+.sao-viet-filter::-webkit-scrollbar {
+  display: none;
+}
+
+.sao-viet-filter button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid rgba(130, 153, 185, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--ink-500);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sao-viet-filter button.is-active {
+  border-color: transparent;
+  background: linear-gradient(135deg, #fff2ad, #f4bf2a);
+  color: #4a2f00;
+  box-shadow: 0 10px 22px rgba(244, 191, 42, 0.2);
+}
+
+.sao-viet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.sao-viet-card {
+  position: relative;
+  overflow: hidden;
+  padding: 14px;
+  border: 1px solid rgba(130, 153, 185, 0.18);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 14px 34px rgba(15, 42, 88, 0.1);
+  animation: rowReveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sao-viet-card.is-leading {
+  border-color: rgba(244, 191, 42, 0.36);
+  box-shadow: 0 18px 44px rgba(244, 191, 42, 0.18);
+}
+
+.sao-viet-leading {
+  display: inline-flex;
+  margin-bottom: 10px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(255, 214, 107, 0.24);
+  color: #7a4f00;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sao-viet-card__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sao-viet-rank {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: rgba(18, 84, 179, 0.08);
+  color: var(--bv-blue-900);
+  font-weight: 700;
+}
+
+.sao-viet-card__identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.sao-viet-card__identity h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-900);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sao-viet-card__identity span {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sao-viet-badge {
+  flex: 0 0 auto;
+  max-width: 118px;
+  padding: 7px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.sao-viet-badge--candidate {
+  background: #e8f1fb;
+  color: #31516d;
+}
+
+.sao-viet-badge--gold {
+  background: linear-gradient(135deg, #fff2ad, #f4bf2a);
+  color: #5b3b00;
+}
+
+.sao-viet-badge--platinum {
+  background: linear-gradient(135deg, #fff, #d8dee8);
+  color: #334155;
+}
+
+.sao-viet-badge--diamond {
+  background: linear-gradient(135deg, #ccfbf1, #67e8f9);
+  color: #075985;
+}
+
+.sao-viet-revenue {
+  margin-top: 14px;
+}
+
+.sao-viet-revenue span {
+  display: block;
+  color: var(--ink-500);
+  font-size: 12px;
+}
+
+.sao-viet-revenue strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--bv-blue-950);
+  font-size: 22px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.sao-viet-progress {
+  margin-top: 13px;
+}
+
+.sao-viet-progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-500);
+  font-size: 12px;
+}
+
+.sao-viet-progress__head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sao-viet-progress__head strong {
+  color: var(--bv-blue-900);
+}
+
+.sao-viet-progress__track {
+  height: 9px;
+  overflow: hidden;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #e8eef7;
+}
+
+.sao-viet-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--bv-blue-700), var(--bv-gold-500));
+  animation: progressGrow 0.9s ease both;
+}
+
+.sao-viet-gaps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 13px;
+}
+
+.sao-viet-gaps span {
+  min-width: 0;
+  padding: 8px 7px;
+  border: 1px solid rgba(130, 153, 185, 0.16);
+  border-radius: 14px;
+  background: #f8fbff;
+  color: #64748b;
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
+.sao-viet-gaps b {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--ink-700);
+}
+
+.sao-viet-gaps span.is-achieved {
+  border-color: rgba(34, 197, 94, 0.16);
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.sao-viet-card--gold {
+  border-color: rgba(244, 191, 42, 0.28);
+}
+
+.sao-viet-card--platinum {
+  border-color: rgba(148, 163, 184, 0.36);
+}
+
+.sao-viet-card--diamond {
+  border-color: rgba(34, 211, 238, 0.36);
+  box-shadow: 0 18px 44px rgba(8, 145, 178, 0.14);
+}
+
+.sao-viet-card--skeleton {
+  min-height: 190px;
+  background:
+    linear-gradient(90deg, rgba(226, 232, 240, 0.55), rgba(255, 255, 255, 0.82), rgba(226, 232, 240, 0.55));
+  background-size: 220% 100%;
+  animation: skeletonShimmer 1.15s ease-in-out infinite;
+}
+
+.sao-viet-preview-table {
+  overflow-x: auto;
+}
+
+.sao-viet-preview-row {
+  display: grid;
+  grid-template-columns: 42px minmax(140px, 1.3fr) minmax(80px, 0.8fr) minmax(90px, 0.8fr) minmax(104px, 0.8fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 620px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(130, 153, 185, 0.14);
+  color: var(--ink-500);
+  font-size: 12px;
+}
+
+.sao-viet-preview-row strong,
+.sao-viet-preview-row--head {
+  color: var(--ink-900);
+  font-weight: 650;
+}
+
+.sao-viet-admin-loading {
+  display: grid;
+  gap: 8px;
+}
+
+.sao-viet-admin-loading span {
+  height: 42px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, #eef2f7, #fff, #eef2f7);
+  background-size: 220% 100%;
+  animation: skeletonShimmer 1.15s ease-in-out infinite;
+}
+
+@keyframes progressGrow {
+  from {
+    transform: scaleX(0);
+    transform-origin: left;
+  }
+
+  to {
+    transform: scaleX(1);
+    transform-origin: left;
+  }
+}
+
+@keyframes skeletonShimmer {
+  from {
+    background-position: 120% 0;
+  }
+
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (max-width: 390px) {
+  .sao-viet-hero h1 {
+    font-size: 30px;
+  }
+
+  .sao-viet-stats strong {
+    font-size: 15px;
+  }
+
+  .sao-viet-card__top {
+    align-items: flex-start;
+  }
+
+  .sao-viet-badge {
+    max-width: 96px;
+  }
+}

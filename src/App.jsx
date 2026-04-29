@@ -11,6 +11,8 @@ import {
   Medal,
   Plus,
   Settings,
+  Sparkles,
+  Star,
   Target,
   Trash2,
   Trophy,
@@ -39,6 +41,15 @@ import {
   getCompetitionLeaderboardEntries,
   syncCompetitionLeaderboardFromSheet,
 } from './services/competitionLeaderboardService'
+import {
+  DEFAULT_SAO_VIET_SHEET,
+  formatMoney as formatSaoVietMoney,
+  getSaoVietMembers,
+  getSaoVietSettings,
+  getSaoVietTierMeta,
+  saveSaoVietSettings,
+  syncSaoVietFromSheet,
+} from './services/saoVietService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -145,6 +156,7 @@ const mainTabs = [
 const adminTabs = [
   { id: 'avatars', label: 'Avatar TVV' },
   { id: 'data', label: 'Dữ liệu Supabase' },
+  { id: 'sao-viet', label: 'Sao Việt' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
   { id: 'banners', label: 'Banner' },
 ]
@@ -1246,6 +1258,11 @@ function MainView({
     loading: false,
     error: '',
   })
+  const [saoViet, setSaoViet] = useState({
+    rows: [],
+    loading: true,
+    error: '',
+  })
 
   useEffect(() => {
     const hasStoredGroups = buildTbtnDataset(tbtnRows).groups.length > 0
@@ -1385,6 +1402,41 @@ function MainView({
     }
   }, [configuredSheets, tbtnRows])
 
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setSaoViet({ rows: [], loading: false, error: 'Chưa cấu hình Supabase.' })
+      return undefined
+    }
+
+    let isMounted = true
+    const loadSaoViet = async () => {
+      setSaoViet((current) => ({ ...current, loading: true, error: '' }))
+      try {
+        const rows = await getSaoVietMembers()
+        if (!isMounted) return
+        setSaoViet({ rows, loading: false, error: '' })
+      } catch (error) {
+        if (!isMounted) return
+        setSaoViet({
+          rows: [],
+          loading: false,
+          error: error?.message ?? 'Không thể tải dữ liệu Sao Việt.',
+        })
+      }
+    }
+
+    loadSaoViet()
+    const channel = supabase
+      .channel('sao-viet-members-public')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sao_viet_members' }, loadSaoViet)
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
   const topMonthRows = remoteRankings.month.rows.length ? remoteRankings.month.rows : advisors
   const topDayRows = topDayAdvisors.length ? topDayAdvisors : remoteRankings.day.rows
   console.log('Top day advisors for render:', topDayAdvisors)
@@ -1479,6 +1531,11 @@ function MainView({
         <MoreMenuBottomSheet
           open={isMoreMenuOpen}
           onClose={() => setIsMoreMenuOpen(false)}
+          onOpenSaoViet={() => {
+            closeModal()
+            setIsMoreMenuOpen(false)
+            setActiveScreen('sao-viet')
+          }}
           onOpenTbtn={() => {
             closeModal()
             setIsMoreMenuOpen(false)
@@ -1492,6 +1549,17 @@ function MainView({
   return (
     <MobileAppShell className="main-shell" bottomNav={bottomNav}>
       <main className="mobile-content mobile-scroll">
+          {activeScreen === 'sao-viet' && (
+            <SaoVietPage
+              members={saoViet.rows}
+              isLoading={saoViet.loading}
+              error={saoViet.error}
+              onBack={() => {
+                closeModal()
+                setActiveScreen('main')
+              }}
+            />
+          )}
           {activeScreen === 'tbtn' && (
             <TeamOverviewPage
               teams={teamOverview.rows}
@@ -2472,6 +2540,13 @@ function AdminView({
     [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || '',
   }))
   const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
+  const [saoVietSettings, setSaoVietSettings] = useState({
+    sheet_url: '',
+    sheet_name: DEFAULT_SAO_VIET_SHEET,
+    last_synced_at: null,
+  })
+  const [saoVietPreview, setSaoVietPreview] = useState([])
+  const [saoVietStatus, setSaoVietStatus] = useState({ loading: '', message: '', error: '' })
   const [leaderboardSyncStatus, setLeaderboardSyncStatus] = useState({})
   const [importLogs, setImportLogs] = useState([])
   const hasLoadedAdminRankings = useRef(false)
@@ -2522,6 +2597,34 @@ function AdminView({
     }
   }, [setDataSettings, setTopDaySheetUrl])
 
+  useEffect(() => {
+    if (!isSupabaseConfigured) return undefined
+    let isMounted = true
+
+    const loadSaoVietAdmin = async () => {
+      try {
+        const [settings, rows] = await Promise.all([
+          getSaoVietSettings(),
+          getSaoVietMembers(),
+        ])
+        if (!isMounted) return
+        setSaoVietSettings({
+          sheet_url: settings.sheet_url || '',
+          sheet_name: settings.sheet_name || DEFAULT_SAO_VIET_SHEET,
+          last_synced_at: settings.last_synced_at || null,
+        })
+        setSaoVietPreview(rows.slice(0, 5))
+      } catch (loadError) {
+        console.error('Không tải được cấu hình Sao Việt', loadError)
+      }
+    }
+
+    loadSaoVietAdmin()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
   const reloadImportLogs = useCallback(async () => {
     if (!isSupabaseConfigured) return
     try {
@@ -2558,6 +2661,48 @@ function AdminView({
       showAdminToast('Đã lưu cấu hình')
     } catch (saveError) {
       setDataSyncStatus({ loading: '', message: '', error: saveError.message })
+    }
+  }
+
+  const saveSaoVietConfig = async () => {
+    setSaoVietStatus({ loading: 'settings', message: '', error: '' })
+    try {
+      const saved = await saveSaoVietSettings(saoVietSettings)
+      setSaoVietSettings({
+        sheet_url: saved.sheet_url || '',
+        sheet_name: saved.sheet_name || DEFAULT_SAO_VIET_SHEET,
+        last_synced_at: saved.last_synced_at || saoVietSettings.last_synced_at || null,
+      })
+      setSaoVietStatus({ loading: '', message: 'Đã lưu cấu hình Sao Việt.', error: '' })
+      showAdminToast('Đã lưu cấu hình Sao Việt')
+    } catch (saveError) {
+      setSaoVietStatus({ loading: '', message: '', error: saveError.message })
+    }
+  }
+
+  const syncSaoViet = async () => {
+    if (!String(saoVietSettings.sheet_url || '').trim()) {
+      setSaoVietStatus({ loading: '', message: '', error: 'Vui lòng nhập Google Sheet URL cho Sao Việt.' })
+      return
+    }
+
+    setSaoVietStatus({ loading: 'sync', message: '', error: '' })
+    try {
+      const saved = await saveSaoVietSettings(saoVietSettings)
+      const rows = await syncSaoVietFromSheet(saved)
+      const nextSettings = await getSaoVietSettings()
+      setSaoVietSettings({
+        sheet_url: nextSettings.sheet_url || '',
+        sheet_name: nextSettings.sheet_name || DEFAULT_SAO_VIET_SHEET,
+        last_synced_at: nextSettings.last_synced_at || new Date().toISOString(),
+      })
+      setSaoVietPreview(rows.slice(0, 5))
+      setSaoVietStatus({ loading: '', message: `Đã đồng bộ Sao Việt: ${rows.length} tư vấn viên.`, error: '' })
+      showAdminToast('Đã đồng bộ Sao Việt')
+      await reloadImportLogs()
+    } catch (syncError) {
+      setSaoVietStatus({ loading: '', message: '', error: syncError.message })
+      await reloadImportLogs()
     }
   }
 
@@ -2865,7 +3010,7 @@ function AdminView({
 
     setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saving' }))
     try {
-      const { avatarUrl } = await uploadAdvisorAvatar(file, advisor)
+      const { avatarUrl } = await uploadAdvisorAvatar(file, advisor, scope)
       updateCampaignRanking(campaignId, id, 'avatar', avatarUrl)
       setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saved' }))
       showAdminToast('Đã lưu avatar')
@@ -2900,7 +3045,7 @@ function AdminView({
         ...advisor,
         name: advisor.name || advisor.advisor_name,
         team: advisor.team || advisor.team_name,
-      })
+      }, period === 'day' ? 'top-ngay' : 'top-thang')
 
       setAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
       setTopDayAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
@@ -3317,6 +3462,17 @@ function AdminView({
               </section>
             )}
 
+            {activeAdminTab === 'sao-viet' && (
+              <SaoVietAdminPanel
+                settings={saoVietSettings}
+                previewRows={saoVietPreview}
+                status={saoVietStatus}
+                onChange={setSaoVietSettings}
+                onSave={saveSaoVietConfig}
+                onSync={syncSaoViet}
+              />
+            )}
+
             {activeAdminTab === 'campaigns' && (
               <section className="admin-section">
                 <div className="admin-section__head">
@@ -3653,11 +3809,285 @@ function RankingPeriodToggle({ value, onChange }) {
   )
 }
 
-function MoreMenuBottomSheet({ open, onClose, onOpenTbtn }) {
+const saoVietFilters = [
+  { id: 'all', label: 'Tất cả' },
+  { id: 'candidate', label: 'Đang chinh phục' },
+  { id: 'gold', label: 'Vàng' },
+  { id: 'platinum', label: 'Bạch Kim' },
+  { id: 'diamond', label: 'Kim Cương' },
+]
+
+const saoVietGapLabels = [
+  ['gold', 'Vàng', 'gap_gold'],
+  ['platinum', 'Bạch Kim', 'gap_platinum'],
+  ['diamond', 'Kim Cương', 'gap_diamond'],
+]
+
+function SaoVietPage({ members, isLoading, error, onBack }) {
+  const [filter, setFilter] = useState('all')
+  const sortedMembers = useMemo(
+    () => [...safeArray(members)].sort((left, right) => Number(right.total_revenue || 0) - Number(left.total_revenue || 0)),
+    [members],
+  )
+  const filteredMembers = filter === 'all'
+    ? sortedMembers
+    : sortedMembers.filter((member) => member.current_tier === filter)
+  const achievedCount = sortedMembers.filter((member) => member.current_tier !== 'candidate').length
+
+  return (
+    <section className="screen sao-viet-page">
+      <div className="sao-viet-header">
+        <button type="button" className="back-link sao-viet-back" onClick={onBack}>
+          <span className="round-icon button-icon">
+            <ChevronLeft size={18} />
+          </span>
+          Trở về
+        </button>
+      </div>
+
+      <div className="screen-body sao-viet-body">
+        <section className="sao-viet-hero">
+          <div>
+            <span className="sao-viet-kicker"><Sparkles size={14} /> 01/12/2025 - 30/11/2026</span>
+            <h1>Sao Việt Đẳng Cấp</h1>
+            <p>Vinh danh tư vấn viên chinh phục cột mốc doanh thu</p>
+          </div>
+          <span className="round-icon sao-viet-hero__icon">
+            <Trophy size={32} />
+          </span>
+        </section>
+
+        <SaoVietStats achievedCount={achievedCount} />
+
+        <div className="sao-viet-filter" role="tablist" aria-label="Lọc danh hiệu Sao Việt">
+          {saoVietFilters.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={filter === item.id ? 'is-active' : ''}
+              onClick={() => setFilter(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {isLoading ? <SaoVietLoadingState /> : null}
+        {!isLoading && error ? <div className="empty-state">Không thể tải dữ liệu Sao Việt. Vui lòng thử lại sau.</div> : null}
+        {!isLoading && !error && !filteredMembers.length ? (
+          <div className="empty-state">Nội dung Sao Việt đang được cập nhật</div>
+        ) : null}
+
+        {!isLoading && !error && filteredMembers.length ? (
+          <div className="sao-viet-list">
+            {filteredMembers.map((member) => (
+              <SaoVietCard
+                key={member.id}
+                member={member}
+                rank={sortedMembers.findIndex((item) => item.id === member.id) + 1}
+                isTop={sortedMembers[0]?.id === member.id}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function SaoVietStats({ achievedCount }) {
+  return (
+    <div className="sao-viet-stats">
+      <div>
+        <Star size={16} />
+        <strong>{achievedCount}</strong>
+        <span>Tổng Sao Việt</span>
+      </div>
+    </div>
+  )
+}
+
+function SaoVietTierBadge({ tier }) {
+  const meta = getSaoVietTierMeta(tier)
+  return <span className={`sao-viet-badge sao-viet-badge--${tier}`}>{meta.displayName}</span>
+}
+
+function SaoVietCard({ member, rank, isTop }) {
+  const tier = member.current_tier || 'candidate'
+  const progress = Math.max(0, Math.min(100, Number(member.progress_percent || 0)))
+  const nextTierMeta = getSaoVietTierMeta(member.next_tier)
+  const progressText = tier === 'diamond'
+    ? 'Đã đạt Sao Việt Kim Cương'
+    : `Đang tiến tới ${nextTierMeta.displayName}`
+
+  return (
+    <article className={`sao-viet-card sao-viet-card--${tier} ${isTop ? 'is-leading' : ''}`}>
+      {isTop ? <span className="sao-viet-leading">Dẫn đầu Sao Việt</span> : null}
+      <div className="sao-viet-card__top">
+        <span className="sao-viet-rank">#{rank}</span>
+        <AvatarCircle advisor={{ ...member, name: member.advisor_name, avatar: member.avatar_url }} />
+        <div className="sao-viet-card__identity">
+          <h3>{member.advisor_name}</h3>
+          <span>{member.group_name || 'Chưa có nhóm'}</span>
+        </div>
+        <SaoVietTierBadge tier={tier} />
+      </div>
+
+      <div className="sao-viet-revenue">
+        <span>Doanh thu tổng</span>
+        <strong>{formatSaoVietMoney(member.total_revenue)}</strong>
+      </div>
+
+      <div className="sao-viet-progress">
+        <div className="sao-viet-progress__head">
+          <span>{progressText}</span>
+          <strong>{Math.round(progress)}%</strong>
+        </div>
+        <div className="sao-viet-progress__track">
+          <div className="sao-viet-progress__fill" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      <div className="sao-viet-gaps">
+        {saoVietGapLabels.map(([key, label, field]) => {
+          const gap = Number(member[field] || 0)
+          return (
+            <span key={key} className={gap >= 0 ? 'is-achieved' : ''}>
+              <b>{label}</b>
+              {gap >= 0 ? 'Đã đạt' : `Còn thiếu ${formatSaoVietMoney(Math.abs(gap), { compact: true })}`}
+            </span>
+          )
+        })}
+      </div>
+    </article>
+  )
+}
+
+function SaoVietLoadingState() {
+  return (
+    <div className="sao-viet-list">
+      {[1, 2, 3, 4].map((item) => (
+        <div key={item} className="sao-viet-card sao-viet-card--skeleton" />
+      ))}
+    </div>
+  )
+}
+
+function SaoVietAdminPanel({ settings, previewRows, status, onChange, onSave, onSync }) {
+  const lastSynced = settings.last_synced_at
+    ? new Date(settings.last_synced_at).toLocaleString('vi-VN')
+    : 'Chưa có'
+
+  return (
+    <section className="admin-section sao-viet-admin">
+      <div className="admin-section__head">
+        <div>
+          <h2>Cấu hình Sao Việt</h2>
+          <p>Đồng bộ danh sách Sao Việt Đẳng Cấp từ tab TongHop và lưu vào Supabase.</p>
+        </div>
+      </div>
+
+      <div className="subsection-box">
+        <div className="editor-grid">
+          <label className="full-row">
+            <span>Google Sheet URL</span>
+            <input
+              value={settings.sheet_url || ''}
+              onChange={(event) => onChange((current) => ({ ...current, sheet_url: event.target.value }))}
+              placeholder="Dán link Google Sheet Sao Việt"
+            />
+          </label>
+          <label>
+            <span>Sheet name</span>
+            <input
+              value={settings.sheet_name || DEFAULT_SAO_VIET_SHEET}
+              onChange={(event) => onChange((current) => ({ ...current, sheet_name: event.target.value }))}
+              placeholder={DEFAULT_SAO_VIET_SHEET}
+            />
+          </label>
+          <label>
+            <span>Lần đồng bộ cuối</span>
+            <input value={lastSynced} readOnly />
+          </label>
+        </div>
+
+        <div className="tbtn-config-actions">
+          <button
+            type="button"
+            className="button-light"
+            onClick={onSave}
+            disabled={Boolean(status.loading)}
+          >
+            {status.loading === 'settings' ? 'Đang lưu...' : 'Lưu cấu hình'}
+          </button>
+          <button
+            type="button"
+            className="button-primary"
+            onClick={onSync}
+            disabled={Boolean(status.loading)}
+          >
+            {status.loading === 'sync' ? 'Đang đồng bộ...' : 'Đồng bộ Sao Việt'}
+          </button>
+        </div>
+
+        {status.error ? <div className="form-error">{status.error}</div> : null}
+        {status.message ? <div className="form-success">{status.message}</div> : null}
+      </div>
+
+      <div className="subsection-box sao-viet-preview">
+        <div className="subsection-box__head">
+          <div>
+            <h3>Preview sau đồng bộ</h3>
+            <p>Hiển thị 5 tư vấn viên đầu theo doanh thu tổng.</p>
+          </div>
+        </div>
+
+        {status.loading === 'sync' ? (
+          <div className="sao-viet-admin-loading">
+            {[1, 2, 3].map((item) => <span key={item} />)}
+          </div>
+        ) : previewRows.length ? (
+          <div className="sao-viet-preview-table">
+            <div className="sao-viet-preview-row sao-viet-preview-row--head">
+              <span>STT</span>
+              <span>Tên tư vấn viên</span>
+              <span>Nhóm</span>
+              <span>Doanh thu</span>
+              <span>Hạng</span>
+            </div>
+            {previewRows.map((row, index) => (
+              <div key={row.id || `${row.advisor_name}-${index}`} className="sao-viet-preview-row">
+                <span>{row.stt || index + 1}</span>
+                <strong>{row.advisor_name}</strong>
+                <span>{row.group_name || '-'}</span>
+                <span>{formatSaoVietMoney(row.total_revenue, { compact: true })}</span>
+                <span>{getSaoVietTierMeta(row.current_tier).displayName}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">Chưa có dữ liệu preview Sao Việt.</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function MoreMenuBottomSheet({ open, onClose, onOpenSaoViet, onOpenTbtn }) {
   if (!open) return null
 
   return (
     <div className="more-menu-sheet more-menu-popover" onClick={(event) => event.stopPropagation()}>
+      <button type="button" className="more-menu-item more-menu-item--sao-viet" onClick={onOpenSaoViet}>
+        <span className="round-icon more-menu-item__icon">
+          <Star size={20} />
+        </span>
+        <span>
+          <strong>Sao Việt</strong>
+          <small>Vinh danh 2026</small>
+        </span>
+        <em>NEW</em>
+      </button>
       <button type="button" className="more-menu-item" onClick={onOpenTbtn}>
         <span className="round-icon more-menu-item__icon">
           <Users size={20} />

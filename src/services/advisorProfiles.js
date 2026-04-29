@@ -1,8 +1,7 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 
-const ADVISOR_AVATAR_BUCKET = 'advisor-avatars'
+const AVATAR_BUCKET = 'avatars'
 const MAX_AVATAR_SIZE = 512
-const WEBP_QUALITY = 0.82
 
 export const normalizeName = (name) =>
   String(name || '')
@@ -19,6 +18,14 @@ const normalizeKey = (value) =>
   normalizeName(value)
     .replace(/\s+/g, '-')
     .replace(/^-+|-+$/g, '') || 'unknown-advisor'
+
+const AVATAR_SCOPE_FOLDERS = {
+  month: 'top-thang',
+  day: 'top-ngay',
+  'top-thang': 'top-thang',
+  'top-ngay': 'top-ngay',
+  campaign: 'campaign',
+}
 
 const getAdvisorCode = (advisor = {}) => {
   const rawCode = advisor.advisor_code ?? advisor.advisorCode ?? advisor.code ?? advisor.maDaiLy ?? advisor.id
@@ -42,7 +49,7 @@ const loadImage = (file) =>
     image.src = objectUrl
   })
 
-const compressAvatarImage = async (file) => {
+const normalizeAvatarImage = async (file) => {
   if (!file?.type?.startsWith('image/')) {
     throw new Error('File avatar không phải là hình ảnh hợp lệ.')
   }
@@ -68,14 +75,25 @@ const compressAvatarImage = async (file) => {
           }
           resolve(blob)
         },
-        'image/webp',
-        WEBP_QUALITY,
+        'image/png',
       )
     })
   } catch (error) {
     console.error('compress avatar image error', error)
     return file
   }
+}
+
+const assertAvatarBucketReady = async (folder) => {
+  const { error } = await supabase.storage.from(AVATAR_BUCKET).list(folder, { limit: 1 })
+  if (!error) return
+
+  const message = error.message || String(error)
+  if (/bucket not found|not found/i.test(message)) {
+    throw new Error('Bucket "avatars" chưa tồn tại trên Supabase Storage. Hãy chạy SQL tạo bucket public "avatars" rồi thử lại.')
+  }
+
+  throw new Error(`Không thể kiểm tra bucket "avatars": ${message}`)
 }
 
 export const fetchAdvisorProfiles = async () => {
@@ -157,37 +175,43 @@ export const upsertAdvisorProfile = async (profile) => {
   return data
 }
 
-export const uploadAdvisorAvatar = async (file, advisor) => {
+export const uploadAdvisorAvatar = async (file, advisor, scope = 'top-thang') => {
   if (!isSupabaseConfigured) {
     throw new Error('Thiếu cấu hình Supabase. Không thể upload avatar.')
   }
 
   const advisorName = String(advisor?.name ?? advisor?.advisor_name ?? '').trim()
-  const normalizedName = normalizeName(advisorName)
+  const normalizedName = normalizeKey(advisorName)
   const advisorCode = getAdvisorCode(advisor)
   if (!advisorName || !normalizedName) {
     throw new Error('Thiếu tên tư vấn viên để upload avatar.')
   }
 
-  const compressedFile = await compressAvatarImage(file)
-  const folderKey = normalizeKey(advisorCode || normalizedName)
-  const objectPath = `${folderKey}/avatar-${Date.now()}.webp`
-  const storedPath = `${ADVISOR_AVATAR_BUCKET}/${objectPath}`
+  const avatarFile = await normalizeAvatarImage(file)
+  const folder = AVATAR_SCOPE_FOLDERS[scope] ?? AVATAR_SCOPE_FOLDERS['top-thang']
+  const objectPath = `${folder}/${normalizedName}.png`
+  const storedPath = `${AVATAR_BUCKET}/${objectPath}`
+
+  await assertAvatarBucketReady(folder)
 
   const { error: uploadError } = await supabase.storage
-    .from(ADVISOR_AVATAR_BUCKET)
-    .upload(objectPath, compressedFile, {
-      cacheControl: '31536000',
+    .from(AVATAR_BUCKET)
+    .upload(objectPath, avatarFile, {
+      cacheControl: '3600',
       upsert: true,
-      contentType: 'image/webp',
+      contentType: 'image/png',
     })
 
   if (uploadError) {
     console.error('upload advisor avatar error', uploadError)
+    const message = uploadError.message || String(uploadError)
+    if (/bucket not found|not found/i.test(message)) {
+      throw new Error('Bucket "avatars" chưa tồn tại trên Supabase Storage. Hãy chạy SQL tạo bucket public "avatars" rồi thử lại.')
+    }
     throw uploadError
   }
 
-  const { data } = supabase.storage.from(ADVISOR_AVATAR_BUCKET).getPublicUrl(objectPath)
+  const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(objectPath)
   const avatarUrl = data.publicUrl
 
   const profile = await upsertAdvisorProfile({

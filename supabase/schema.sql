@@ -274,6 +274,40 @@ create table if not exists public.advisor_profiles (
 create index if not exists advisor_profiles_normalized_name_idx
 on public.advisor_profiles (normalized_name);
 
+create table if not exists public.sao_viet_settings (
+  id uuid primary key default gen_random_uuid(),
+  sheet_url text,
+  sheet_name text default 'TongHop',
+  last_synced_at timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists public.sao_viet_members (
+  id uuid primary key default gen_random_uuid(),
+  stt int,
+  advisor_name text not null,
+  normalized_name text,
+  group_name text,
+  avatar_url text,
+  total_revenue numeric default 0,
+  gap_gold numeric default 0,
+  gap_platinum numeric default 0,
+  gap_diamond numeric default 0,
+  current_tier text,
+  progress_percent numeric default 0,
+  next_tier text,
+  synced_at timestamptz default now(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists sao_viet_members_revenue_idx
+on public.sao_viet_members (total_revenue desc);
+
+create index if not exists sao_viet_members_tier_idx
+on public.sao_viet_members (current_tier);
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'autorank-assets',
@@ -351,6 +385,16 @@ for each row execute function public.set_updated_at();
 drop trigger if exists advisor_profiles_set_updated_at on public.advisor_profiles;
 create trigger advisor_profiles_set_updated_at
 before update on public.advisor_profiles
+for each row execute function public.set_updated_at();
+
+drop trigger if exists sao_viet_settings_set_updated_at on public.sao_viet_settings;
+create trigger sao_viet_settings_set_updated_at
+before update on public.sao_viet_settings
+for each row execute function public.set_updated_at();
+
+drop trigger if exists sao_viet_members_set_updated_at on public.sao_viet_members;
+create trigger sao_viet_members_set_updated_at
+before update on public.sao_viet_members
 for each row execute function public.set_updated_at();
 
 drop trigger if exists app_settings_set_updated_at on public.app_settings;
@@ -454,6 +498,13 @@ begin
   ) then
     alter publication supabase_realtime add table public.team_overview;
   end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'sao_viet_members'
+  ) then
+    alter publication supabase_realtime add table public.sao_viet_members;
+  end if;
 end $$;
 
 alter table public.advisors enable row level security;
@@ -467,6 +518,8 @@ alter table public.daily_rankings enable row level security;
 alter table public.monthly_rankings enable row level security;
 alter table public.team_overview enable row level security;
 alter table public.import_logs enable row level security;
+alter table public.sao_viet_settings enable row level security;
+alter table public.sao_viet_members enable row level security;
 
 drop policy if exists "Public read advisors" on public.advisors;
 create policy "Public read advisors" on public.advisors for select using (true);
@@ -530,6 +583,16 @@ drop policy if exists "Public read import logs" on public.import_logs;
 create policy "Public read import logs" on public.import_logs for select using (true);
 drop policy if exists "Public write import logs" on public.import_logs;
 create policy "Public write import logs" on public.import_logs for all using (true) with check (true);
+
+drop policy if exists "Public read sao viet settings" on public.sao_viet_settings;
+create policy "Public read sao viet settings" on public.sao_viet_settings for select using (true);
+drop policy if exists "Public write sao viet settings" on public.sao_viet_settings;
+create policy "Public write sao viet settings" on public.sao_viet_settings for all using (true) with check (true);
+
+drop policy if exists "Public read sao viet members" on public.sao_viet_members;
+create policy "Public read sao viet members" on public.sao_viet_members for select using (true);
+drop policy if exists "Public write sao viet members" on public.sao_viet_members;
+create policy "Public write sao viet members" on public.sao_viet_members for all using (true) with check (true);
 
 drop policy if exists "Public read autorank assets" on storage.objects;
 create policy "Public read autorank assets"
