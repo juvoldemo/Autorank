@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import {
+  Banknote,
   Check,
   ChevronLeft,
   FileText,
@@ -568,7 +569,7 @@ const formatTbtnMoney = (value) =>
   `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')} đ`
 
 const formatCompetitionMoney = (value) =>
-  `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')}đ`
+  `${Number(normalizeRevenue(value) || 0).toLocaleString('vi-VN')} VNĐ`
 
 const formatCompetitionDate = (value) => {
   if (!value) return '-'
@@ -1421,6 +1422,10 @@ function MainView({
     setModalType(null)
   }
 
+  useEffect(() => {
+    if (selectedCampaign || modalType) closeModal()
+  }, [activeTab, activeScreen])
+
   const updatePageBanner = async (pageId, file) => {
     if (!bannerPageIds.has(pageId) || !file?.type?.startsWith('image/')) return
 
@@ -1445,6 +1450,7 @@ function MainView({
             type="button"
             className={`bottom-tab ${isActive ? 'is-active' : ''}`}
             onClick={() => {
+              closeModal()
               setActiveScreen('main')
               setActiveTab(tab.id)
               if (tab.id === 'bang-vang') {
@@ -1474,6 +1480,7 @@ function MainView({
           open={isMoreMenuOpen}
           onClose={() => setIsMoreMenuOpen(false)}
           onOpenTbtn={() => {
+            closeModal()
             setIsMoreMenuOpen(false)
             setActiveScreen('tbtn')
           }}
@@ -1490,7 +1497,10 @@ function MainView({
               teams={teamOverview.rows}
               isLoading={teamOverview.loading}
               error={teamOverview.error}
-              onBack={() => setActiveScreen('main')}
+              onBack={() => {
+                closeModal()
+                setActiveScreen('main')
+              }}
             />
           )}
           {activeScreen === 'main' && activeTab === 'bang-vang' && (
@@ -2178,6 +2188,7 @@ function RankingModal({ campaign, onClose }) {
     loading: true,
     error: '',
   })
+  const [selectedEntry, setSelectedEntry] = useState(null)
 
   useEffect(() => {
     let isMounted = true
@@ -2203,67 +2214,166 @@ function RankingModal({ campaign, onClose }) {
   }, [campaign.id])
 
   return (
-    <ModalShell title={`BXH - ${campaign.title}`} onClose={onClose} className="ranking-modal">
-      <CampaignVisual campaign={campaign} compact />
-      <div className="modal-card">
-        <h3>{campaign.title}</h3>
+    <ModalShell title="BXH - Mừng ngày giỗ tổ" onClose={onClose} className="ranking-modal">
+      <div className="modal-card ranking-modal-card">
+        <div className="competition-leaderboard-summary">
+          <strong>{leaderboardState.rows.length || 0}</strong>
+          <span>lượt ghi nhận</span>
+        </div>
         {leaderboardState.loading ? (
-          <div className="empty-state">Đang tải BXH CTTĐ...</div>
+          <div className="competition-leaderboard-list" aria-label="Đang tải BXH CTTĐ">
+            {Array.from({ length: 5 }).map((_, index) => (
+              <CompetitionLeaderboardSkeleton key={index} toneIndex={index} />
+            ))}
+          </div>
         ) : leaderboardState.error ? (
           <div className="empty-state">Không đọc được Supabase: {leaderboardState.error}</div>
         ) : leaderboardState.rows.length ? (
           <div className="competition-leaderboard-list">
             {leaderboardState.rows.map((entry, index) => (
-              <CompetitionLeaderboardCard key={entry.id} entry={entry} displayRank={index + 1} toneIndex={index} />
+              <CompetitionLeaderboardCard
+                key={entry.id}
+                entry={entry}
+                displayRank={index + 1}
+                toneIndex={index}
+                onOpen={() => setSelectedEntry(entry)}
+              />
             ))}
           </div>
         ) : (
           <div className="empty-state">Chương trình này chưa có dữ liệu BXH.</div>
         )}
       </div>
+      {selectedEntry ? (
+        <CompetitionEntryDetail entry={selectedEntry} onClose={() => setSelectedEntry(null)} />
+      ) : null}
     </ModalShell>
   )
 }
 
-function CompetitionLeaderboardCard({ entry, displayRank, toneIndex = 0 }) {
-  const contractNumber =
+function getCompetitionContractNumber(entry) {
+  return (
     entry.raw_data?.['Số hợp đồng'] ||
     entry.raw_data?.['So hop dong'] ||
     entry.raw_data?.['Số HĐ'] ||
     entry.raw_data?.['Hop dong'] ||
     ''
+  )
+}
+
+function CompetitionLeaderboardCard({ entry, displayRank, toneIndex = 0, onOpen }) {
+  const rankValue = Number(entry.rank || displayRank)
+  const rankTone = rankValue <= 3 ? rankValue : 'default'
+  const reward = formatCompetitionMoney(entry.reward_achieved_t4)
 
   return (
-    <article className={`competition-leaderboard-card competition-leaderboard-card--tone-${(toneIndex % 5) + 1}`}>
-      <div className="competition-leaderboard-card__top">
+    <article
+      className={`competition-leaderboard-card competition-leaderboard-card--rank-${rankTone}`}
+      style={{ '--card-delay': `${Math.min(toneIndex, 12) * 55}ms` }}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onOpen?.()
+        }
+      }}
+    >
+      <header className="competition-leaderboard-card__header">
         <span className="competition-leaderboard-card__rank">{entry.rank || displayRank}</span>
-        <div className="competition-leaderboard-card__person">
-          <strong>{entry.advisor_name}</strong>
-          <span>{entry.group_name || 'Chưa có nhóm'}</span>
+        <div className="competition-leaderboard-card__identity">
+          <strong title={entry.advisor_name}>{entry.advisor_name || '-'}</strong>
+          <span title={entry.group_name || 'Chưa có nhóm'}>{entry.group_name || 'Chưa có nhóm'}</span>
         </div>
-        <div className="competition-leaderboard-card__reward">
-          <span>Thưởng hợp đồng</span>
-          <strong>{formatCompetitionMoney(entry.reward_achieved_t4)}</strong>
+        <div className="competition-leaderboard-card__mini-reward" title={reward}>
+          <Banknote size={14} aria-hidden="true" />
+          <span>{reward}</span>
         </div>
-      </div>
-      <div className="competition-leaderboard-card__grid">
-        <div className="competition-leaderboard-card__customer">
-          <span>Khách hàng</span>
-          <strong>{entry.customer_name || '-'}</strong>
-          {contractNumber ? <small>HĐ {contractNumber}</small> : null}
+      </header>
+      <div className="competition-leaderboard-card__kpis">
+        <div className="competition-leaderboard-card__kpi">
+          <span>KH</span>
+          <strong title={entry.customer_name || '-'}>{entry.customer_name || '-'}</strong>
         </div>
-        <div>
-          <span>Ngày thu</span>
+        <div className="competition-leaderboard-card__kpi">
+          <span>Ngày</span>
           <strong>{formatCompetitionDate(entry.collection_date)}</strong>
         </div>
-        <div>
-          <span>PĐT/IP hợp đồng</span>
-          <strong>{formatCompetitionMoney(entry.total_pdt_tvv)}</strong>
+        <div className="competition-leaderboard-card__kpi">
+          <span>IP</span>
+          <strong title={formatCompetitionMoney(entry.total_pdt_tvv)}>
+            {formatCompetitionMoney(entry.total_pdt_tvv)}
+          </strong>
         </div>
       </div>
     </article>
   )
 }
+
+function CompetitionLeaderboardSkeleton({ toneIndex = 0 }) {
+  return (
+    <article
+      className="competition-leaderboard-card competition-leaderboard-card--skeleton"
+      style={{ '--card-delay': `${Math.min(toneIndex, 12) * 55}ms` }}
+      aria-hidden="true"
+    >
+      <header className="competition-leaderboard-card__header">
+        <span className="competition-leaderboard-card__rank skeleton-line" />
+        <div className="competition-leaderboard-card__identity">
+          <span className="skeleton-line skeleton-line--name" />
+          <span className="skeleton-line skeleton-line--group" />
+        </div>
+        <span className="competition-leaderboard-card__mini-reward skeleton-line" />
+      </header>
+      <div className="competition-leaderboard-card__kpis">
+        <span className="skeleton-line skeleton-line--kpi" />
+        <span className="skeleton-line skeleton-line--kpi" />
+        <span className="skeleton-line skeleton-line--kpi" />
+      </div>
+    </article>
+  )
+}
+
+function CompetitionEntryDetail({ entry, onClose }) {
+  const contractNumber = getCompetitionContractNumber(entry)
+
+  return (
+    <div className="competition-entry-detail" onClick={onClose}>
+      <section className="competition-entry-detail__panel" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="round-icon icon-close competition-entry-detail__close" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <div className="competition-entry-detail__rank">#{entry.rank || '-'}</div>
+        <h3>{entry.advisor_name || '-'}</h3>
+        <p>{entry.group_name || 'Chưa có nhóm'}</p>
+        <div className="competition-entry-detail__reward">
+          <Banknote size={18} aria-hidden="true" />
+          <strong>{formatCompetitionMoney(entry.reward_achieved_t4)}</strong>
+        </div>
+        <div className="competition-entry-detail__grid">
+          <div>
+            <span>Khách hàng</span>
+            <strong>{entry.customer_name || '-'}</strong>
+          </div>
+          <div>
+            <span>Ngày thu</span>
+            <strong>{formatCompetitionDate(entry.collection_date)}</strong>
+          </div>
+          <div>
+            <span>PĐT/IP hợp đồng</span>
+            <strong>{formatCompetitionMoney(entry.total_pdt_tvv)}</strong>
+          </div>
+          <div>
+            <span>Hợp đồng</span>
+            <strong>{contractNumber || '-'}</strong>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function PosterModal({ campaign, onClose }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
