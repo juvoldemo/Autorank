@@ -1,6 +1,6 @@
 import Papa from 'papaparse'
 import { DATA_SETTING_KEYS, createImportLog, fetchAppSettings } from './settingsService'
-import { normalizeAdvisorName } from './advisorService'
+import { normalizeName as normalizeAdvisorName } from './advisorProfiles'
 import { replaceDailyRankings, replaceMonthlyRankings } from './rankingService'
 import { replaceTeamOverview } from './teamOverviewService'
 

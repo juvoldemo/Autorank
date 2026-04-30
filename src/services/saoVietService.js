@@ -1,6 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient'
-import { normalizeName } from './advisorService'
-import { fetchAdvisorProfiles, mergeAdvisorsWithProfiles } from './advisorProfiles'
+import { fetchAdvisorProfiles, mergeAdvisorsWithProfiles, normalizeName } from './advisorProfiles'
 import { createImportLog } from './settingsService'
 import { fetchSheetRows } from './importService'
 

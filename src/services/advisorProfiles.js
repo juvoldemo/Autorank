@@ -28,7 +28,7 @@ const AVATAR_SCOPE_FOLDERS = {
 }
 
 const getAdvisorCode = (advisor = {}) => {
-  const rawCode = advisor.advisor_code ?? advisor.advisorCode ?? advisor.code ?? advisor.maDaiLy ?? advisor.id
+  const rawCode = advisor.advisor_code ?? advisor.advisorCode ?? advisor.code ?? advisor.maDaiLy
   const code = String(rawCode || '').trim()
   return code || null
 }
@@ -227,27 +227,24 @@ export const uploadAdvisorAvatar = async (file, advisor, scope = 'top-thang') =>
   return { avatarUrl, avatarPath: storedPath, profile }
 }
 
+export const findAdvisorProfile = (advisor, profiles) => {
+  const advisorCode = getAdvisorCode(advisor)
+  const normalizedName = normalizeName(advisor?.normalized_name || advisor?.advisor_name || advisor?.name)
+  const profileRows = profiles ?? []
+
+  if (advisorCode) {
+    const codeMatch = profileRows.find((profile) => getAdvisorCode(profile) === advisorCode)
+    if (codeMatch) return codeMatch
+  }
+
+  return profileRows.find((profile) => normalizeName(profile?.normalized_name || profile?.advisor_name || profile?.name) === normalizedName)
+}
+
 export const mergeAdvisorsWithProfiles = (advisors, profiles) => {
-  const codeMap = new Map()
-  const nameMap = new Map()
-
-  ;(profiles ?? []).forEach((profile) => {
-    const avatarUrl = profile?.avatar_url
-    if (!avatarUrl) return
-
-    const code = String(profile.advisor_code || '').trim()
-    const normalizedName = normalizeName(profile.normalized_name || profile.advisor_name)
-    if (code) codeMap.set(code, avatarUrl)
-    if (normalizedName && !nameMap.has(normalizedName)) nameMap.set(normalizedName, avatarUrl)
-  })
-
   return (advisors ?? []).map((advisor) => {
-    const code = getAdvisorCode(advisor)
-    const normalizedName = normalizeName(advisor?.normalized_name || advisor?.name)
-    const avatarFromProfile = (code && codeMap.get(code)) || nameMap.get(normalizedName)
+    const avatarFromProfile = findAdvisorProfile(advisor, profiles)?.avatar_url
+    const avatarUrl = avatarFromProfile || advisor?.avatar_url || advisor?.avatar || null
 
-    return avatarFromProfile
-      ? { ...advisor, avatar: avatarFromProfile, avatar_url: avatarFromProfile }
-      : advisor
+    return { ...advisor, avatar: avatarUrl || '', avatar_url: avatarUrl }
   })
 }

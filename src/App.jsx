@@ -5,12 +5,17 @@ import {
   Banknote,
   Check,
   ChevronLeft,
+  ClipboardList,
+  Download,
   FileText,
   Flame,
+  FolderOpen,
   Menu,
   Medal,
   Plus,
+  RefreshCw,
   Settings,
+  Share2,
   Sparkles,
   Star,
   Target,
@@ -50,6 +55,15 @@ import {
   saveSaoVietSettings,
   syncSaoVietFromSheet,
 } from './services/saoVietService'
+import {
+  DEFAULT_FORM_CATEGORIES,
+  FORM_TEMPLATE_CATEGORIES,
+  deleteFormTemplate,
+  fetchFormTemplates,
+  getFormCategoryLabel,
+  saveFormTemplate,
+  setFormTemplateActive,
+} from './services/formTemplateService'
 import defaultThiDuaBanner from './assets/21fd45f3-37f4-43a5-9929-2b509e8a095e.png'
 import defaultTopBanner from './assets/69d1e3d6-07e7-473d-b4e1-d1f4ee7598f1.png'
 import './App.css'
@@ -157,6 +171,7 @@ const adminTabs = [
   { id: 'avatars', label: 'Avatar TVV' },
   { id: 'data', label: 'Dữ liệu Supabase' },
   { id: 'sao-viet', label: 'Sao Việt' },
+  { id: 'forms', label: 'Mẫu biểu' },
   { id: 'campaigns', label: 'Chương trình thi đua' },
   { id: 'banners', label: 'Banner' },
 ]
@@ -1064,6 +1079,10 @@ function App() {
       '',
   )
   const [topDayAdvisors, setTopDayAdvisors] = useState([])
+  const [remoteRankings, setRemoteRankings] = useState({
+    month: { rows: [], loading: false, error: '' },
+    day: { rows: [], loading: false, error: '' },
+  })
   const [dataSettings, setDataSettings] = useState({
     [DATA_SETTING_KEYS.topMonthUrl]: SHEET_CONFIG.topMonth || window.localStorage.getItem('autorank_top_thang_url') || '',
     [DATA_SETTING_KEYS.topDayUrl]: SHEET_CONFIG.topDay || '',
@@ -1188,6 +1207,7 @@ function App() {
         setDataSettings={setDataSettings}
         topDayAdvisors={topDayAdvisors}
         setTopDayAdvisors={setTopDayAdvisors}
+        setRemoteRankings={setRemoteRankings}
         setIsAdminLoggedIn={setIsAdminLoggedIn}
         fetchCompetitions={fetchCompetitions}
         navigate={navigate}
@@ -1208,6 +1228,8 @@ function App() {
       dataSettings={dataSettings}
       topDayAdvisors={topDayAdvisors}
       setTopDayAdvisors={setTopDayAdvisors}
+      remoteRankings={remoteRankings}
+      setRemoteRankings={setRemoteRankings}
       navigate={navigate}
     />
   )
@@ -1238,6 +1260,8 @@ function MainView({
   dataSettings,
   topDayAdvisors,
   setTopDayAdvisors,
+  remoteRankings,
+  setRemoteRankings,
   navigate,
 }) {
   const [activeTab, setActiveTab] = useState('bang-vang')
@@ -1249,10 +1273,6 @@ function MainView({
   const [competitionFilter, setCompetitionFilter] = useState('active')
   const [selectedCampaign, setSelectedCampaign] = useState(null)
   const [modalType, setModalType] = useState(null)
-  const [remoteRankings, setRemoteRankings] = useState({
-    month: { rows: [], loading: false, error: '' },
-    day: { rows: [], loading: false, error: '' },
-  })
   const [teamOverview, setTeamOverview] = useState({
     rows: tbtnRows,
     loading: false,
@@ -1260,6 +1280,12 @@ function MainView({
   })
   const [saoViet, setSaoViet] = useState({
     rows: [],
+    loading: true,
+    error: '',
+  })
+  const [formTemplates, setFormTemplates] = useState({
+    categories: DEFAULT_FORM_CATEGORIES.map((category) => ({ ...category, is_active: true })),
+    documents: [],
     loading: true,
     error: '',
   })
@@ -1437,6 +1463,31 @@ function MainView({
     }
   }, [])
 
+  useEffect(() => {
+    let isMounted = true
+    const loadFormTemplates = async () => {
+      setFormTemplates((current) => ({ ...current, loading: true, error: '' }))
+      try {
+        const categories = DEFAULT_FORM_CATEGORIES.map((category) => ({ ...category, is_active: true }))
+        const documents = await fetchFormTemplates()
+        if (!isMounted) return
+        setFormTemplates({ categories, documents, loading: false, error: '' })
+      } catch (formError) {
+        if (!isMounted) return
+        setFormTemplates((current) => ({
+          ...current,
+          loading: false,
+          error: formError?.message ?? 'Không tải được Mẫu biểu.',
+        }))
+      }
+    }
+
+    loadFormTemplates()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
   const topMonthRows = remoteRankings.month.rows.length ? remoteRankings.month.rows : advisors
   const topDayRows = topDayAdvisors.length ? topDayAdvisors : remoteRankings.day.rows
   console.log('Top day advisors for render:', topDayAdvisors)
@@ -1531,6 +1582,11 @@ function MainView({
         <MoreMenuBottomSheet
           open={isMoreMenuOpen}
           onClose={() => setIsMoreMenuOpen(false)}
+          onOpenForms={() => {
+            closeModal()
+            setIsMoreMenuOpen(false)
+            setActiveScreen('forms')
+          }}
           onOpenSaoViet={() => {
             closeModal()
             setIsMoreMenuOpen(false)
@@ -1565,6 +1621,18 @@ function MainView({
               teams={teamOverview.rows}
               isLoading={teamOverview.loading}
               error={teamOverview.error}
+              onBack={() => {
+                closeModal()
+                setActiveScreen('main')
+              }}
+            />
+          )}
+          {activeScreen === 'forms' && (
+            <FormTemplatesPage
+              categories={formTemplates.categories}
+              documents={formTemplates.documents}
+              loading={formTemplates.loading}
+              error={formTemplates.error}
               onBack={() => {
                 closeModal()
                 setActiveScreen('main')
@@ -2221,7 +2289,7 @@ function CampaignCard({ campaign, onOpenDetail, onOpenRanking, onOpenPoster }) {
             Chi tiết
           </button>
           <button type="button" className="button-primary" onClick={onOpenRanking}>
-            Bảng xếp hạng
+            Danh sách TVV
           </button>
         </div>
       </div>
@@ -2511,6 +2579,7 @@ function AdminView({
   setDataSettings,
   topDayAdvisors,
   setTopDayAdvisors,
+  setRemoteRankings,
   setIsAdminLoggedIn,
   fetchCompetitions,
   navigate,
@@ -2540,6 +2609,7 @@ function AdminView({
     [DATA_SETTING_KEYS.tbtnUrl]: dataSettings?.[DATA_SETTING_KEYS.tbtnUrl] || tbtnSheetUrl || '',
   }))
   const [dataSyncStatus, setDataSyncStatus] = useState({ loading: '', message: '', error: '' })
+  const [syncAllStatus, setSyncAllStatus] = useState({ loading: false, message: '', error: '' })
   const [saoVietSettings, setSaoVietSettings] = useState({
     sheet_url: '',
     sheet_name: DEFAULT_SAO_VIET_SHEET,
@@ -2548,6 +2618,19 @@ function AdminView({
   const [saoVietPreview, setSaoVietPreview] = useState([])
   const [saoVietStatus, setSaoVietStatus] = useState({ loading: '', message: '', error: '' })
   const [leaderboardSyncStatus, setLeaderboardSyncStatus] = useState({})
+  const [adminForms, setAdminForms] = useState({
+    categories: DEFAULT_FORM_CATEGORIES.map((category) => ({ ...category, is_active: true })),
+    documents: [],
+    loading: false,
+    error: '',
+  })
+  const [formUploadDraft, setFormUploadDraft] = useState({
+    title: '',
+    category: FORM_TEMPLATE_CATEGORIES[0].value,
+    is_active: true,
+    file: null,
+  })
+  const [isSavingFormTemplate, setIsSavingFormTemplate] = useState(false)
   const [importLogs, setImportLogs] = useState([])
   const hasLoadedAdminRankings = useRef(false)
   const dataSyncInFlightRef = useRef(false)
@@ -2638,6 +2721,35 @@ function AdminView({
     reloadImportLogs()
   }, [reloadImportLogs])
 
+  const reloadAdminForms = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      setAdminForms({
+        categories: DEFAULT_FORM_CATEGORIES.map((category) => ({ ...category, is_active: true })),
+        documents: [],
+        loading: false,
+        error: 'Chưa cấu hình Supabase.',
+      })
+      return
+    }
+    setAdminForms((current) => ({ ...current, loading: true, error: '' }))
+    try {
+      const categories = DEFAULT_FORM_CATEGORIES.map((category) => ({ ...category, is_active: true }))
+      const documents = await fetchFormTemplates({ includeInactive: true })
+      setAdminForms({ categories, documents, loading: false, error: '' })
+    } catch (formError) {
+      setAdminForms((current) => ({
+        ...current,
+        loading: false,
+        error: formError?.message ?? 'Không tải được Mẫu biểu.',
+      }))
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isAdminLoggedIn) return
+    reloadAdminForms()
+  }, [isAdminLoggedIn, reloadAdminForms])
+
   const alertSupabaseError = (action, supabaseError) => {
     console.error(action, supabaseError)
     window.alert(`${action}: ${supabaseError?.message ?? supabaseError}`)
@@ -2680,7 +2792,7 @@ function AdminView({
     }
   }
 
-  const syncSaoViet = async () => {
+  const syncSaoViet = async ({ showToast = true } = {}) => {
     if (!String(saoVietSettings.sheet_url || '').trim()) {
       setSaoVietStatus({ loading: '', message: '', error: 'Vui lòng nhập Google Sheet URL cho Sao Việt.' })
       return
@@ -2745,6 +2857,10 @@ function AdminView({
 
       setTopDayAdvisors(syncedDailyRows)
       setAdvisors(syncedMonthlyRows)
+      setRemoteRankings({
+        month: { rows: syncedMonthlyRows, loading: false, error: '' },
+        day: { rows: syncedDailyRows, loading: false, error: '' },
+      })
       setDataSyncStatus({
         loading: '',
         message: `Đã đồng bộ: ${monthly.rows.length} Top tháng, ${daily.rows.length} Top ngày, ${tbtn.rows.length} nhóm.`,
@@ -2757,6 +2873,154 @@ function AdminView({
       await reloadImportLogs()
     } finally {
       dataSyncInFlightRef.current = false
+    }
+  }
+
+  const handleSyncAll = async () => {
+    if (syncAllStatus.loading) return
+
+    const results = []
+    const settings = { ...dataSettings, ...dataConfigDraft }
+    const toSyncedAdvisor = (row, index) => {
+      const advisorName = String(row.advisor_name ?? row.name ?? '').trim()
+      const normalizedName = normalizeAdvisorName(row.normalized_name || advisorName)
+      return {
+        id: String(row.id || row.advisor_code || `${row.rank || index + 1}-${normalizedName}`),
+        advisor_code: row.advisor_code || '',
+        normalized_name: normalizedName,
+        name: advisorName,
+        team: row.team_name || row.team || '',
+        initials: getInitials(advisorName),
+        revenue: normalizeRevenue(row.revenue),
+        avatar: row.avatar_url || row.avatar || '',
+        avatar_url: row.avatar_url || row.avatar || '',
+        rank: Number(row.rank || index + 1),
+      }
+    }
+    const runStep = async (label, task) => {
+      try {
+        const value = await task()
+        results.push({ label, ok: true })
+        return value
+      } catch (stepError) {
+        const message = stepError?.message ?? String(stepError)
+        results.push({ label, ok: false, error: message })
+        return null
+      }
+    }
+
+    setSyncAllStatus({ loading: true, message: '', error: '' })
+    setDataSyncStatus({ loading: 'all', message: '', error: '' })
+    setSaoVietStatus((current) => ({ ...current, loading: 'sync', message: '', error: '' }))
+
+    try {
+      await runStep('Lưu cấu hình dữ liệu', async () => {
+        await saveSettingsToSupabase(settings)
+        setDataSettings((current) => ({ ...current, ...settings }))
+        setTopDaySheetUrl(settings[DATA_SETTING_KEYS.topDayUrl] || '')
+        window.localStorage.setItem('autorank_top_thang_url', settings[DATA_SETTING_KEYS.topMonthUrl] || '')
+        window.localStorage.setItem(TOP_DAY_URL_STORAGE_KEY, settings[DATA_SETTING_KEYS.topDayUrl] || '')
+        window.localStorage.setItem(TBTN_URL_STORAGE_KEY, settings[DATA_SETTING_KEYS.tbtnUrl] || '')
+      })
+
+      const monthly = await runStep('Top tháng', () => syncMonthlyRankings(settings))
+      const daily = await runStep('Top ngày', () => syncDailyRankings(settings))
+      const tbtn = await runStep('TBTN', () => syncTeamOverview(settings))
+
+      await runStep('Avatar Top tháng / Top ngày', async () => {
+        const syncedDailyRows = daily?.rows ? await mergeWithStoredAvatars(daily.rows.map(toSyncedAdvisor)) : null
+        const syncedMonthlyRows = monthly?.rows ? await mergeWithStoredAvatars(monthly.rows.map(toSyncedAdvisor)) : null
+        if (syncedDailyRows) setTopDayAdvisors(syncedDailyRows)
+        if (syncedMonthlyRows) setAdvisors(syncedMonthlyRows)
+        setRemoteRankings((current) => ({
+          month: { ...current.month, rows: syncedMonthlyRows ?? current.month.rows, loading: false, error: '' },
+          day: { ...current.day, rows: syncedDailyRows ?? current.day.rows, loading: false, error: '' },
+        }))
+      })
+
+      setDataSyncStatus({
+        loading: '',
+        message: `Đã đồng bộ: ${monthly?.rows?.length ?? 0} Top tháng, ${daily?.rows?.length ?? 0} Top ngày, ${tbtn?.rows?.length ?? 0} nhóm.`,
+        error: '',
+      })
+
+      const saoRows = await runStep('Sao Việt', async () => {
+        const sheetUrl = String(saoVietSettings.sheet_url || '').trim()
+        if (!sheetUrl) throw new Error('Chưa có Google Sheet URL cho Sao Việt.')
+        const saved = await saveSaoVietSettings(saoVietSettings)
+        const rows = await syncSaoVietFromSheet(saved)
+        const nextSettings = await getSaoVietSettings()
+        setSaoVietSettings({
+          sheet_url: nextSettings.sheet_url || '',
+          sheet_name: nextSettings.sheet_name || DEFAULT_SAO_VIET_SHEET,
+          last_synced_at: nextSettings.last_synced_at || new Date().toISOString(),
+        })
+        setSaoVietPreview(rows.slice(0, 5))
+        return rows
+      })
+      setSaoVietStatus({
+        loading: '',
+        message: saoRows ? `Đã đồng bộ Sao Việt: ${saoRows.length} tư vấn viên.` : '',
+        error: saoRows ? '' : 'Đồng bộ Sao Việt lỗi. Xem tổng kết phía trên.',
+      })
+
+      const configuredCampaigns = campaigns.filter((campaign) => String(campaign.leaderboardSheetUrl || '').trim())
+      if (!configuredCampaigns.length) {
+        results.push({ label: 'BXH chương trình thi đua', ok: true })
+      }
+      for (const campaign of configuredCampaigns) {
+        await runStep(`BXH CTTĐ - ${campaign.title}`, async () => {
+          const sheetUrl = String(campaign.leaderboardSheetUrl || '').trim()
+          const sheetName = String(campaign.leaderboardSheetName || DEFAULT_COMPETITION_LEADERBOARD_SHEET).trim()
+          setLeaderboardSyncStatus((current) => ({
+            ...current,
+            [campaign.id]: { loading: true, message: '', error: '' },
+          }))
+          try {
+            await saveCompetitionToSupabase({ ...campaign, leaderboardSheetUrl: sheetUrl, leaderboardSheetName: sheetName })
+            const rows = await syncCompetitionLeaderboardFromSheet({
+              competitionId: campaign.id,
+              sheetUrl,
+              sheetName,
+            })
+            setLeaderboardSyncStatus((current) => ({
+              ...current,
+              [campaign.id]: { loading: false, message: `Đã đồng bộ ${rows.length} dòng BXH CTTĐ.`, error: '' },
+            }))
+            return rows
+          } catch (campaignSyncError) {
+            setLeaderboardSyncStatus((current) => ({
+              ...current,
+              [campaign.id]: {
+                loading: false,
+                message: '',
+                error: campaignSyncError?.message ?? String(campaignSyncError),
+              },
+            }))
+            throw campaignSyncError
+          }
+        })
+      }
+      await runStep('Tải lại chương trình thi đua', fetchCompetitions)
+      await runStep('Tải lại lịch sử import', reloadImportLogs)
+
+      const failed = results.filter((item) => !item.ok)
+      const message = failed.length
+        ? `Đồng bộ hoàn tất nhưng có một số mục lỗi: ${failed.map((item) => item.label).join(', ')}`
+        : 'Đã đồng bộ tất cả dữ liệu thành công'
+      setSyncAllStatus({
+        loading: false,
+        message,
+        error: failed.length ? failed.map((item) => `${item.label}: ${item.error}`).join('\n') : '',
+      })
+      showAdminToast(message)
+    } finally {
+      setSyncAllStatus((current) => ({ ...current, loading: false }))
+      setDataSyncStatus((current) => ({ ...current, loading: '' }))
+      setSaoVietStatus((current) => ({ ...current, loading: '' }))
+      setLeaderboardSyncStatus((current) =>
+        Object.fromEntries(Object.entries(current).map(([id, status]) => [id, { ...status, loading: false }])),
+      )
     }
   }
 
@@ -3030,7 +3294,7 @@ function AdminView({
     return safeArray(rows).map((row) => {
       const rowCode = String(row?.advisor_code || '').trim()
       const rowName = normalizeAdvisorName(row?.normalized_name || row?.name || row?.advisor_name || '')
-      const isSameAdvisor = (sourceCode && rowCode === sourceCode) || (!sourceCode && sourceName && rowName === sourceName)
+      const isSameAdvisor = (sourceCode && rowCode === sourceCode) || (sourceName && rowName === sourceName)
       return isSameAdvisor ? { ...row, avatar: avatarUrl, avatar_url: avatarUrl } : row
     })
   }
@@ -3049,6 +3313,10 @@ function AdminView({
 
       setAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
       setTopDayAdvisors((current) => applyAvatarToRankingRows(current, advisor, avatarUrl))
+      setRemoteRankings((current) => ({
+        month: { ...current.month, rows: applyAvatarToRankingRows(current.month.rows, advisor, avatarUrl) },
+        day: { ...current.day, rows: applyAvatarToRankingRows(current.day.rows, advisor, avatarUrl) },
+      }))
       setAvatarUploadStatus((current) => ({ ...current, [statusKey]: 'saved' }))
       showAdminToast('Đã lưu avatar vào Supabase')
     } catch (uploadError) {
@@ -3238,6 +3506,113 @@ function AdminView({
     setBanners((current) => ({ ...normalizeBanners(current), [pageId]: '' }))
   }
 
+  const saveAdminFormCategory = async () => {
+    try {
+      await saveFormCategory({
+        ...formCategoryDraft,
+        slug: formCategoryDraft.slug || slugifyFormValue(formCategoryDraft.name),
+      })
+      setFormCategoryDraft({
+        name: '',
+        description: '',
+        icon: 'folder',
+        color: 'blue',
+        sort_order: adminForms.categories.length + 1,
+        is_active: true,
+      })
+      await reloadAdminForms()
+      showAdminToast('Đã lưu nhóm mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể lưu nhóm mẫu biểu', formError)
+    }
+  }
+
+  const editAdminFormCategory = (category) => {
+    setFormCategoryDraft({
+      ...category,
+      is_active: category.is_active ?? true,
+    })
+  }
+
+  const removeAdminFormCategory = async (category) => {
+    if (!window.confirm(`Xóa nhóm "${category.name}" và toàn bộ file bên trong?`)) return
+    try {
+      await deleteFormCategory(category.id)
+      await reloadAdminForms()
+      showAdminToast('Đã xóa nhóm mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể xóa nhóm mẫu biểu', formError)
+    }
+  }
+
+  const saveAdminFormDocument = async (draft, file) => {
+    setIsSavingFormDocument(true)
+    try {
+      const category = adminForms.categories.find((item) => item.id === draft.category_id)
+      let uploadData = {}
+      if (file) uploadData = await uploadFormDocumentPdf(file, category?.slug || 'mau-bieu')
+      await saveFormDocument({ ...draft, ...uploadData })
+      setFormDocumentModal(null)
+      await reloadAdminForms()
+      showAdminToast('Đã lưu mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể lưu mẫu biểu', formError)
+    } finally {
+      setIsSavingFormDocument(false)
+    }
+  }
+
+  const removeAdminFormDocument = async (document) => {
+    if (!window.confirm(`Xóa mẫu biểu "${document.title}"?`)) return
+    try {
+      await deleteFormDocument(document.id)
+      await reloadAdminForms()
+      showAdminToast('Đã xóa mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể xóa mẫu biểu', formError)
+    }
+  }
+
+  const saveAdminFormTemplate = async () => {
+    setIsSavingFormTemplate(true)
+    try {
+      await saveFormTemplate(formUploadDraft)
+      setFormUploadDraft({
+        title: '',
+        category: FORM_TEMPLATE_CATEGORIES[0].value,
+        is_active: true,
+        file: null,
+      })
+      await reloadAdminForms()
+      showAdminToast('Đã lưu mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể lưu mẫu biểu', formError)
+    } finally {
+      setIsSavingFormTemplate(false)
+    }
+  }
+
+  const toggleAdminFormTemplate = async (template) => {
+    try {
+      await setFormTemplateActive(template.id, !template.is_active)
+      await reloadAdminForms()
+      showAdminToast(template.is_active ? 'Đã ẩn mẫu biểu' : 'Đã hiển thị mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể cập nhật trạng thái mẫu biểu', formError)
+    }
+  }
+
+  const removeAdminFormTemplate = async (template) => {
+    if (!window.confirm(`Xóa mẫu biểu "${template.title}"?`)) return
+    try {
+      await deleteFormTemplate(template)
+      await reloadAdminForms()
+      showAdminToast('Đã xóa mẫu biểu')
+    } catch (formError) {
+      alertSupabaseError('Không thể xóa mẫu biểu', formError)
+    }
+  }
+
   return (
     <MobileAppShell className="admin-shell">
       <div className="admin-scroll">
@@ -3284,6 +3659,22 @@ function AdminView({
           </div>
         ) : (
           <div className="admin-panel">
+            <div className="admin-sync-all">
+              <button
+                type="button"
+                className="admin-sync-all__button"
+                onClick={handleSyncAll}
+                disabled={syncAllStatus.loading}
+              >
+                <span className="round-icon button-icon">
+                  {syncAllStatus.loading ? <span className="loading-spinner" /> : <RefreshCw size={18} />}
+                </span>
+                {syncAllStatus.loading ? 'Đang đồng bộ...' : 'Đồng bộ tất cả'}
+              </button>
+              {syncAllStatus.message ? <div className="form-success">{syncAllStatus.message}</div> : null}
+              {syncAllStatus.error ? <div className="form-error">{syncAllStatus.error}</div> : null}
+            </div>
+
             <div className="admin-topbar">
               <button type="button" className="back-link" onClick={() => navigate('/')}>
                 <span className="round-icon button-icon">
@@ -3369,7 +3760,7 @@ function AdminView({
                   >
                     {dataSyncStatus.loading === 'settings' ? 'Đang lưu...' : 'Lưu cấu hình'}
                   </button>
-                  <button type="button" className="button-primary" onClick={runDataSync} disabled={Boolean(dataSyncStatus.loading)}>
+                  <button type="button" className="button-primary admin-hidden-sync" onClick={runDataSync} disabled={Boolean(dataSyncStatus.loading)} hidden>
                     {dataSyncStatus.loading === 'all' ? 'Đang đồng bộ...' : 'Đồng bộ'}
                   </button>
                 </div>
@@ -3470,6 +3861,20 @@ function AdminView({
                 onChange={setSaoVietSettings}
                 onSave={saveSaoVietConfig}
                 onSync={syncSaoViet}
+              />
+            )}
+
+            {activeAdminTab === 'forms' && (
+              <AdminSimpleFormTemplates
+                templates={adminForms.documents}
+                loading={adminForms.loading}
+                error={adminForms.error}
+                draft={formUploadDraft}
+                onDraftChange={setFormUploadDraft}
+                onSave={saveAdminFormTemplate}
+                isSaving={isSavingFormTemplate}
+                onToggle={toggleAdminFormTemplate}
+                onDelete={removeAdminFormTemplate}
               />
             )}
 
@@ -3623,9 +4028,10 @@ function AdminView({
                                 </div>
                                 <button
                                   type="button"
-                                  className="button-primary"
+                                  className="button-primary admin-hidden-sync"
                                   onClick={() => syncCampaignLeaderboard(campaign, campaignImport.remoteUrl)}
                                   disabled={leaderboardStatus.loading}
+                                  hidden
                                 >
                                   <span className="round-icon button-icon">
                                     {leaderboardStatus.loading ? <span className="loading-spinner" /> : <Upload size={16} />}
@@ -3973,6 +4379,518 @@ function SaoVietLoadingState() {
   )
 }
 
+const getFormCategoryIcon = (icon) => {
+  if (icon === 'clipboard') return ClipboardList
+  if (icon === 'file-text') return FileText
+  return FolderOpen
+}
+
+const formatFormDate = (value) => {
+  if (!value) return 'Chưa cập nhật'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Chưa cập nhật' : date.toLocaleDateString('vi-VN')
+}
+
+function FormTemplatesPage({ categories, documents, loading, error, onBack }) {
+  const [selectedCategoryId, setSelectedCategoryId] = useState('')
+  const [query, setQuery] = useState('')
+  const [formToast, setFormToast] = useState('')
+  const formToastTimerRef = useRef(null)
+  const visibleCategories = safeArray(categories).filter((category) => category.is_active !== false)
+  const selectedCategory = visibleCategories.find((category) => category.id === selectedCategoryId || category.slug === selectedCategoryId)
+  const getCategoryDocuments = (category) =>
+    safeArray(documents).filter((document) => document.category === category.id && document.is_active !== false)
+  const selectedDocuments = selectedCategory ? getCategoryDocuments(selectedCategory) : []
+  const filteredDocuments = selectedDocuments.filter((document) =>
+    `${document.title || ''} ${document.description || ''}`.toLowerCase().includes(query.trim().toLowerCase()),
+  )
+  const showFormToast = useCallback((message) => {
+    setFormToast(message)
+    if (formToastTimerRef.current) window.clearTimeout(formToastTimerRef.current)
+    formToastTimerRef.current = window.setTimeout(() => setFormToast(''), 2400)
+  }, [])
+
+  useEffect(() => () => {
+    if (formToastTimerRef.current) window.clearTimeout(formToastTimerRef.current)
+  }, [])
+
+  return (
+    <section className="screen form-templates-page">
+      <div className="sao-viet-header">
+        <button type="button" className="back-link sao-viet-back" onClick={selectedCategory ? () => { setSelectedCategoryId(''); setQuery('') } : onBack}>
+          <span className="round-icon button-icon">
+            <ChevronLeft size={18} />
+          </span>
+          {selectedCategory ? 'Mẫu biểu' : 'Trở về'}
+        </button>
+      </div>
+
+      <div className="screen-body form-templates-body">
+        {!selectedCategory ? (
+          <>
+            <section className="form-templates-hero">
+              <div>
+                <span><FileText size={15} /> Thư viện biểu mẫu</span>
+                <h1>Mẫu biểu</h1>
+                <p>Tra cứu và tải nhanh các biểu mẫu nghiệp vụ</p>
+              </div>
+              <span className="round-icon form-templates-hero__icon">
+                <FolderOpen size={30} />
+              </span>
+            </section>
+
+            {loading ? <div className="empty-state">Đang tải mẫu biểu...</div> : null}
+            {!loading && error ? <div className="form-error">{error}</div> : null}
+            {!loading && !visibleCategories.length ? <FormEmptyState text="Chưa có nhóm mẫu biểu" /> : null}
+            <div className="form-category-grid">
+              {visibleCategories.map((category) => (
+                <FormCategoryCard
+                  key={category.id || category.slug}
+                  category={category}
+                  onOpen={() => setSelectedCategoryId(category.id || category.slug)}
+                />
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <section className={`form-group-head form-color-${selectedCategory.color || 'blue'}`}>
+              <div>
+                <span>{selectedDocuments.length} biểu mẫu</span>
+                <h1>{selectedCategory.name}</h1>
+                <p>{selectedCategory.description || 'Danh sách file PDF thuộc nhóm hồ sơ này.'}</p>
+              </div>
+              <span className="round-icon">
+                {(() => {
+                  const Icon = getFormCategoryIcon(selectedCategory.icon)
+                  return <Icon size={28} />
+                })()}
+              </span>
+            </section>
+            <label className="form-search">
+              <FileText size={16} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm biểu mẫu..." />
+            </label>
+            {!selectedDocuments.length ? <FormEmptyState text="Chưa có biểu mẫu trong mục này" /> : null}
+            {selectedDocuments.length && !filteredDocuments.length ? <FormEmptyState text="Không tìm thấy biểu mẫu phù hợp" /> : null}
+            <div className="form-document-list">
+              {filteredDocuments.map((document) => (
+                <FormDocumentCard key={document.id} document={document} onToast={showFormToast} />
+              ))}
+            </div>
+            {formToast ? <div className="form-toast" role="status">{formToast}</div> : null}
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function FormCategoryCard({ category, onOpen }) {
+  const Icon = getFormCategoryIcon(category.icon)
+  return (
+    <button type="button" className={`form-category-card form-color-${category.color || 'blue'}`} onClick={onOpen}>
+      <span className="round-icon form-category-card__icon">
+        <Icon size={22} />
+      </span>
+      <span className="form-category-card__content">
+        <strong>{category.name}</strong>
+        <small>Biểu mẫu PDF</small>
+      </span>
+      <span className="form-category-card__action">Xem</span>
+    </button>
+  )
+}
+
+function FormDocumentCard({ document, onToast }) {
+  const canDownload = Boolean(document.file_url)
+  const handleDownload = (file) => {
+    if (!file?.file_url) return
+    window.open(file.file_url, '_blank', 'noopener,noreferrer')
+  }
+  const handleShare = async (file) => {
+    if (!file?.file_url) return
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: file.title,
+          text: file.description || file.title,
+          url: file.file_url,
+        })
+        onToast?.('Đã mở chia sẻ')
+        return
+      }
+
+      await navigator.clipboard.writeText(file.file_url)
+      onToast?.('Đã sao chép link mẫu biểu')
+    } catch (shareError) {
+      if (shareError?.name === 'AbortError') return
+      try {
+        await navigator.clipboard.writeText(file.file_url)
+        onToast?.('Đã sao chép link mẫu biểu')
+      } catch {
+        onToast?.('Không thể chia sẻ mẫu biểu')
+      }
+    }
+  }
+
+  return (
+    <article className="form-document-card">
+      <span className="round-icon form-document-card__pdf">
+        <FileText size={20} />
+      </span>
+      <div className="form-document-card__content">
+        <h3>{document.title}</h3>
+        <div>
+          <span>Cập nhật {formatFormDate(document.updated_at || document.created_at)}</span>
+          {document.file_size ? <span>{document.file_size}</span> : null}
+        </div>
+      </div>
+      {canDownload ? (
+        <div className="form-document-card__actions">
+          <button
+            type="button"
+            className="form-document-action form-document-action--download"
+            onClick={() => handleDownload(document)}
+            aria-label={`Tải về ${document.title}`}
+            title="Tải về"
+          >
+            <Download size={17} />
+          </button>
+          <button
+            type="button"
+            className="form-document-action form-document-action--share"
+            onClick={() => handleShare(document)}
+            aria-label={`Chia sẻ ${document.title}`}
+            title="Chia sẻ"
+          >
+            <Share2 size={17} />
+          </button>
+        </div>
+      ) : (
+        <span className="form-document-missing">Chưa có file</span>
+      )}
+    </article>
+  )
+}
+
+function FormEmptyState({ text }) {
+  return (
+    <div className="form-empty-state">
+      <FolderOpen size={32} />
+      <span>{text}</span>
+    </div>
+  )
+}
+
+const FORM_COLOR_OPTIONS = ['blue', 'green', 'gold']
+const FORM_ICON_OPTIONS = ['folder', 'file-text', 'clipboard']
+
+function AdminSimpleFormTemplates({ templates, loading, error, draft, onDraftChange, onSave, isSaving, onToggle, onDelete }) {
+  return (
+    <section className="admin-section admin-form-templates">
+      <div className="admin-section__head">
+        <div>
+          <h2>Mẫu biểu</h2>
+          <p>Upload PDF, chọn nghiệp vụ và bật/tắt hiển thị cho tư vấn viên.</p>
+        </div>
+      </div>
+      {loading ? <div className="empty-state">Đang tải Mẫu biểu...</div> : null}
+      {error ? <div className="form-error">{error}</div> : null}
+      <div className="subsection-box">
+        <div className="subsection-box__head">
+          <div>
+            <h3>Upload mẫu biểu</h3>
+            <p>File PDF được lưu vào bucket form-templates.</p>
+          </div>
+        </div>
+        <div className="editor-grid">
+          <label className="full-row">
+            <span>Tên mẫu biểu</span>
+            <input value={draft.title} onChange={(event) => onDraftChange((current) => ({ ...current, title: event.target.value }))} placeholder="Nhập tên mẫu biểu" />
+          </label>
+          <label className="full-row">
+            <span>Chọn nghiệp vụ</span>
+            <select value={draft.category} onChange={(event) => onDraftChange((current) => ({ ...current, category: event.target.value }))}>
+              {FORM_TEMPLATE_CATEGORIES.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
+            </select>
+          </label>
+          <label className="full-row">
+            <span>Upload file PDF</span>
+            <input type="file" accept="application/pdf,.pdf" onChange={(event) => onDraftChange((current) => ({ ...current, file: event.target.files?.[0] || null }))} />
+          </label>
+          <label className="form-checkbox-field">
+            <input type="checkbox" checked={draft.is_active !== false} onChange={(event) => onDraftChange((current) => ({ ...current, is_active: event.target.checked }))} />
+            <span>Hiển thị trên giao diện người dùng</span>
+          </label>
+        </div>
+        <div className="tbtn-config-actions">
+          <button type="button" className="button-primary" onClick={onSave} disabled={isSaving}>
+            {isSaving ? 'Đang lưu...' : 'Lưu mẫu biểu'}
+          </button>
+        </div>
+      </div>
+      <div className="subsection-box">
+        <div className="subsection-box__head">
+          <div>
+            <h3>Danh sách mẫu biểu đã upload</h3>
+            <p>Xem file, bật/tắt hiển thị hoặc xóa mẫu biểu.</p>
+          </div>
+        </div>
+        <div className="admin-list">
+          {templates.length ? templates.map((template) => (
+            <div key={template.id} className="preview-row admin-form-document-row">
+              <div className="preview-row__content">
+                <strong>{template.title}</strong>
+                <span>{getFormCategoryLabel(template.category)} - {template.is_active ? 'Đang hiện' : 'Đang ẩn'}</span>
+                <span>{template.file_path?.split('/').pop() || 'PDF'}</span>
+                <span>{formatFormDate(template.updated_at || template.created_at)}</span>
+              </div>
+              <div className="compact-card__actions">
+                <a className="admin-action-btn admin-action-btn--edit" href={template.file_url} target="_blank" rel="noreferrer" aria-label="Xem file">
+                  <FileText size={16} />
+                </a>
+                <button type="button" className="admin-action-btn admin-action-btn--edit" onClick={() => onToggle(template)}>
+                  {template.is_active ? <X size={16} /> : <Check size={16} />}
+                </button>
+                <button type="button" className="admin-action-btn admin-action-btn--delete" onClick={() => onDelete(template)} aria-label="Xóa mẫu biểu">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          )) : <div className="empty-state">Chưa có mẫu biểu nào.</div>}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function AdminFormTemplates({
+  categories,
+  documents,
+  loading,
+  error,
+  categoryDraft,
+  onCategoryDraftChange,
+  onSaveCategory,
+  onEditCategory,
+  onDeleteCategory,
+  onOpenDocumentModal,
+  onDeleteDocument,
+}) {
+  return (
+    <section className="admin-section admin-form-templates">
+      <div className="admin-section__head">
+        <div>
+          <h2>Mẫu biểu</h2>
+          <p>Quản lý nhóm hồ sơ và file PDF để tư vấn viên tải nhanh trên Menu.</p>
+        </div>
+        <button type="button" className="button-primary" onClick={() => onOpenDocumentModal()}>
+          <span className="round-icon button-icon">
+            <Plus size={16} />
+          </span>
+          Thêm mẫu biểu
+        </button>
+      </div>
+      {loading ? <div className="empty-state">Đang tải Mẫu biểu...</div> : null}
+      {error ? <div className="form-error">{error}</div> : null}
+      <AdminFormCategoryManager
+        categories={categories}
+        documents={documents}
+        draft={categoryDraft}
+        onDraftChange={onCategoryDraftChange}
+        onSave={onSaveCategory}
+        onEdit={onEditCategory}
+        onDelete={onDeleteCategory}
+      />
+      <AdminFormDocumentManager
+        categories={categories}
+        documents={documents}
+        onEdit={onOpenDocumentModal}
+        onDelete={onDeleteDocument}
+      />
+    </section>
+  )
+}
+
+function AdminFormCategoryManager({ categories, documents, draft, onDraftChange, onSave, onEdit, onDelete }) {
+  return (
+    <div className="subsection-box">
+      <div className="subsection-box__head">
+        <div>
+          <h3>Nhóm mẫu biểu</h3>
+          <p>Thêm, sửa tên nhóm, màu, icon và thứ tự hiển thị.</p>
+        </div>
+      </div>
+      <div className="editor-grid">
+        <label className="full-row">
+          <span>Tên nhóm</span>
+          <input value={draft.name || ''} onChange={(event) => onDraftChange((current) => ({ ...current, name: event.target.value }))} />
+        </label>
+        <label>
+          <span>Màu</span>
+          <select value={draft.color || 'blue'} onChange={(event) => onDraftChange((current) => ({ ...current, color: event.target.value }))}>
+            {FORM_COLOR_OPTIONS.map((color) => <option key={color} value={color}>{color}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Icon</span>
+          <select value={draft.icon || 'folder'} onChange={(event) => onDraftChange((current) => ({ ...current, icon: event.target.value }))}>
+            {FORM_ICON_OPTIONS.map((icon) => <option key={icon} value={icon}>{icon}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Thứ tự</span>
+          <input type="number" value={draft.sort_order ?? 0} onChange={(event) => onDraftChange((current) => ({ ...current, sort_order: event.target.value }))} />
+        </label>
+        <label className="form-checkbox-field">
+          <input type="checkbox" checked={draft.is_active !== false} onChange={(event) => onDraftChange((current) => ({ ...current, is_active: event.target.checked }))} />
+          <span>Hiển thị trên giao diện người dùng</span>
+        </label>
+      </div>
+      <div className="tbtn-config-actions">
+        <button type="button" className="button-primary" onClick={onSave}>Lưu nhóm</button>
+        {draft.id ? (
+          <button
+            type="button"
+            className="button-light"
+            onClick={() => onDraftChange({ name: '', description: '', icon: 'folder', color: 'blue', sort_order: categories.length + 1, is_active: true })}
+          >
+            Hủy sửa
+          </button>
+        ) : null}
+      </div>
+      <div className="admin-form-category-list">
+        {categories.map((category) => (
+          <div key={category.id} className={`admin-form-category-row form-color-${category.color || 'blue'}`}>
+            <span className="round-icon">
+              {(() => {
+                const Icon = getFormCategoryIcon(category.icon)
+                return <Icon size={18} />
+              })()}
+            </span>
+            <div>
+              <strong>{category.name}</strong>
+              <small>{documents.filter((document) => document.category_id === category.id).length} file PDF - {category.is_active ? 'Đang hiện' : 'Đang ẩn'}</small>
+            </div>
+            <button type="button" className="admin-action-btn admin-action-btn--edit" onClick={() => onEdit(category)} aria-label="Sửa nhóm">
+              <Settings size={16} />
+            </button>
+            <button type="button" className="admin-action-btn admin-action-btn--delete" onClick={() => onDelete(category)} aria-label="Xóa nhóm">
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AdminFormDocumentManager({ categories, documents, onEdit, onDelete }) {
+  const getCategoryName = (categoryId) => categories.find((category) => category.id === categoryId)?.name || 'Chưa chọn nhóm'
+  return (
+    <div className="subsection-box">
+      <div className="subsection-box__head">
+        <div>
+          <h3>Danh sách file PDF</h3>
+          <p>Quản lý link/file, trạng thái hiển thị và ngày cập nhật.</p>
+        </div>
+      </div>
+      <div className="admin-list">
+        {documents.length ? documents.map((document) => (
+          <div key={document.id} className="preview-row admin-form-document-row">
+            <div className="preview-row__content">
+              <strong>{document.title}</strong>
+              <span>{getCategoryName(document.category_id)} - {document.is_active ? 'Đang hiện' : 'Đang ẩn'}</span>
+              <span>{formatFormDate(document.updated_at || document.created_at)}{document.file_size ? ` - ${document.file_size}` : ''}</span>
+              <a href={document.file_url} target="_blank" rel="noreferrer">{document.file_name || document.file_url}</a>
+            </div>
+            <div className="compact-card__actions">
+              <button type="button" className="admin-action-btn admin-action-btn--edit" onClick={() => onEdit(document)} aria-label="Sửa mẫu biểu">
+                <Settings size={16} />
+              </button>
+              <button type="button" className="admin-action-btn admin-action-btn--delete" onClick={() => onDelete(document)} aria-label="Xóa mẫu biểu">
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </div>
+        )) : <div className="empty-state">Chưa có file mẫu biểu.</div>}
+      </div>
+    </div>
+  )
+}
+
+function FormDocumentModal({ draft, categories, isSaving, onClose, onSave }) {
+  const [form, setForm] = useState(() => ({
+    category_id: draft.category_id || categories[0]?.id || '',
+    title: draft.title || '',
+    description: draft.description || '',
+    file_url: draft.file_url || '',
+    file_name: draft.file_name || '',
+    file_size: draft.file_size || '',
+    sort_order: draft.sort_order ?? 0,
+    is_active: draft.is_active ?? true,
+    id: draft.id,
+  }))
+  const [file, setFile] = useState(null)
+
+  return (
+    <div className="campaign-modal-overlay" onClick={onClose}>
+      <div className="campaign-modal form-document-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="campaign-modal__head">
+          <div>
+            <h2>{form.id ? 'Sửa mẫu biểu' : 'Thêm mẫu biểu'}</h2>
+            <span className="admin-status-badge admin-status-badge--active">PDF</span>
+          </div>
+          <button type="button" className="campaign-modal__close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="campaign-modal__body">
+          <div className="campaign-modal__grid">
+            <label className="full-row">
+              <span>Nhóm hồ sơ</span>
+              <select value={form.category_id} onChange={(event) => setForm((current) => ({ ...current, category_id: event.target.value }))}>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
+            </label>
+            <label className="full-row">
+              <span>Tên biểu mẫu</span>
+              <input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} placeholder="Nhập tên biểu mẫu" />
+            </label>
+            <label className="full-row">
+              <span>Mô tả ngắn</span>
+              <textarea rows="3" value={form.description || ''} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
+            </label>
+            <label className="full-row">
+              <span>Upload file PDF</span>
+              <input type="file" accept="application/pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            </label>
+            <label className="full-row">
+              <span>Hoặc nhập link PDF</span>
+              <input value={form.file_url} onChange={(event) => setForm((current) => ({ ...current, file_url: event.target.value }))} placeholder="https://..." />
+            </label>
+            <label>
+              <span>Thứ tự</span>
+              <input type="number" value={form.sort_order} onChange={(event) => setForm((current) => ({ ...current, sort_order: event.target.value }))} />
+            </label>
+            <label className="form-checkbox-field">
+              <input type="checkbox" checked={form.is_active !== false} onChange={(event) => setForm((current) => ({ ...current, is_active: event.target.checked }))} />
+              <span>Hiển thị</span>
+            </label>
+          </div>
+        </div>
+        <div className="campaign-modal__footer">
+          <button type="button" className="button-light" onClick={onClose}>Hủy</button>
+          <button type="button" className="campaign-confirm-btn" onClick={() => onSave(form, file)} disabled={isSaving}>
+            {isSaving ? 'Đang lưu...' : 'Lưu'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SaoVietAdminPanel({ settings, previewRows, status, onChange, onSave, onSync }) {
   const lastSynced = settings.last_synced_at
     ? new Date(settings.last_synced_at).toLocaleString('vi-VN')
@@ -4022,8 +4940,9 @@ function SaoVietAdminPanel({ settings, previewRows, status, onChange, onSave, on
           </button>
           <button
             type="button"
-            className="button-primary"
+            className="button-primary admin-hidden-sync"
             onClick={onSync}
+            hidden
             disabled={Boolean(status.loading)}
           >
             {status.loading === 'sync' ? 'Đang đồng bộ...' : 'Đồng bộ Sao Việt'}
@@ -4073,7 +4992,7 @@ function SaoVietAdminPanel({ settings, previewRows, status, onChange, onSave, on
   )
 }
 
-function MoreMenuBottomSheet({ open, onClose, onOpenSaoViet, onOpenTbtn }) {
+function MoreMenuBottomSheet({ open, onClose, onOpenForms, onOpenSaoViet, onOpenTbtn }) {
   if (!open) return null
 
   return (
@@ -4093,17 +5012,15 @@ function MoreMenuBottomSheet({ open, onClose, onOpenSaoViet, onOpenTbtn }) {
           <Users size={20} />
         </span>
         <span>
-          <strong>TBTN</strong>
-          <small>Tổng quan thi đua theo nhóm</small>
+          <strong>Nhóm</strong>
         </span>
       </button>
-      <button type="button" className="more-menu-item" onClick={onClose}>
+      <button type="button" className="more-menu-item" onClick={onOpenForms}>
         <span className="round-icon more-menu-item__icon">
-          <FileText size={20} />
+          <FolderOpen size={20} />
         </span>
         <span>
-          <strong>Khác</strong>
-          <small>Tiện ích mở rộng</small>
+          <strong>Mẫu biểu</strong>
         </span>
       </button>
     </div>

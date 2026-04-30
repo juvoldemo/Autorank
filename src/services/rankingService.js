@@ -1,5 +1,5 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient'
-import { normalizeName } from './advisorService'
+import { fetchAdvisorProfiles, mergeAdvisorsWithProfiles, normalizeName } from './advisorProfiles'
 
 const DAILY_TABLE = 'daily_rankings'
 const MONTHLY_TABLE = 'monthly_rankings'
@@ -77,15 +77,19 @@ const normalizeRankingRows = (rows) =>
 export async function fetchDailyRankings(limit = 10) {
   try {
     ensureSupabase()
-    const { data, error } = await supabase
-      .from(DAILY_TABLE)
-      .select('*')
-      .order('report_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(Math.max(limit * 10, 50))
+    const [{ data, error }, profiles] = await Promise.all([
+      supabase
+        .from(DAILY_TABLE)
+        .select('*')
+        .order('report_date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(Math.max(limit * 10, 50)),
+      fetchAdvisorProfiles(),
+    ])
     if (error) throw error
     const latestDate = data?.[0]?.report_date
-    return latestRowsByRank((data ?? []).filter((row) => row.report_date === latestDate), limit).map(toAppAdvisor)
+    const rows = latestRowsByRank((data ?? []).filter((row) => row.report_date === latestDate), limit)
+    return mergeAdvisorsWithProfiles(rows, profiles).map(toAppAdvisor)
   } catch (error) {
     console.error('fetchDailyRankings error', error)
     throw new Error(`Không tải được Top ngày từ Supabase: ${error.message}`, { cause: error })
@@ -95,19 +99,23 @@ export async function fetchDailyRankings(limit = 10) {
 export async function fetchMonthlyRankings(limit = 10) {
   try {
     ensureSupabase()
-    const { data, error } = await supabase
-      .from(MONTHLY_TABLE)
-      .select('*')
-      .order('report_year', { ascending: false })
-      .order('report_month', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(Math.max(limit * 10, 50))
+    const [{ data, error }, profiles] = await Promise.all([
+      supabase
+        .from(MONTHLY_TABLE)
+        .select('*')
+        .order('report_year', { ascending: false })
+        .order('report_month', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(Math.max(limit * 10, 50)),
+      fetchAdvisorProfiles(),
+    ])
     if (error) throw error
     const latest = data?.[0]
-    return latestRowsByRank(
+    const rows = latestRowsByRank(
       (data ?? []).filter((row) => row.report_year === latest?.report_year && row.report_month === latest?.report_month),
       limit,
-    ).map(toAppAdvisor)
+    )
+    return mergeAdvisorsWithProfiles(rows, profiles).map(toAppAdvisor)
   } catch (error) {
     console.error('fetchMonthlyRankings error', error)
     throw new Error(`Không tải được Top tháng từ Supabase: ${error.message}`, { cause: error })
